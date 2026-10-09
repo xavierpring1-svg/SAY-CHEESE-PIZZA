@@ -2,61 +2,77 @@ from __future__ import annotations
 
 import datetime
 import html
-import math
 import os
 import threading
 import time
 
 import psutil
-from PySide6.QtCore import Qt, QTimer, QPointF, Signal, QObject
+from PySide6.QtCore import Qt, QTimer, Signal, QObject, QSize
 from PySide6.QtGui import QColor, QPainter, QPen, QFont, QIcon, QPixmap, QCloseEvent
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QLineEdit, QTextBrowser, QStackedWidget, QScrollArea, QFrame,
     QCheckBox, QSlider, QComboBox, QFormLayout, QSpinBox, QListWidget, QListWidgetItem,
-    QSystemTrayIcon, QMenu, QFileDialog, QMessageBox, QDoubleSpinBox)
+    QSystemTrayIcon, QMenu, QFileDialog, QMessageBox, QDoubleSpinBox, QProgressBar)
 
 from .core import Store, ROOT
 from .windows import Apps, IS_WINDOWS, gpu_usage
 from .voice import Speaker, Listener, available_voices
 from .assistant import Assistant, HELP
-from .model import model_path, ModelInstaller
+from .model import model_path, ModelInstaller, MODELS, selected_model_key
+from .ui_components import Reactor, Sparkline, MicrophoneMeter
 from . import __version__
 
 STYLE = """
-* { font-family: 'Segoe UI'; font-size: 13px; color: #d7e8f2; }
-QMainWindow, QWidget#shell { background: #090f17; }
-QWidget#settingsPage { background: #090f17; }
-QWidget#sidebar { background: #0d1621; border-right: 1px solid #203142; }
-QLabel#brand { font-size: 25px; font-weight: 700; letter-spacing: 5px; color: #56ddeb; }
-QLabel#eyebrow { color: #65839b; font-size: 10px; letter-spacing: 2px; }
-QLabel#title { font-size: 27px; font-weight: 600; }
-QLabel#subtitle { color: #7e9bb1; }
-QLabel#clock { font-size: 30px; font-weight: 300; color: #e9faff; }
-QLabel#number { font-size: 21px; font-weight: 600; }
-QFrame#card { background: #0f1b28; border: 1px solid #203448; border-radius: 13px; }
-QPushButton { background: #152433; border: 1px solid #294257; border-radius: 8px; padding: 10px 15px; }
-QPushButton:hover { background: #1b3545; border-color: #54d8e7; }
-QPushButton:pressed { background: #224d59; }
-QPushButton#primary { background: #44cede; color: #06151c; font-weight: 700; border: 0; }
-QPushButton#nav { text-align: left; background: transparent; border: 0; padding: 13px 18px; color: #8aa5ba; }
-QPushButton#nav:checked { background: #16303f; color: #60e2ec; border-left: 3px solid #60e2ec; border-radius: 4px; }
-QPushButton#small { padding: 6px 12px; }
-QLineEdit, QTextBrowser, QComboBox, QSpinBox, QDoubleSpinBox { background: #0a141f; border: 1px solid #2a4054; border-radius: 8px; padding: 10px; selection-background-color: #236a7a; }
-QLineEdit:focus { border-color: #51d6e5; }
-QTextBrowser { padding: 15px; }
+* { font-family: 'Segoe UI'; font-size: 13px; color: #dce9f3; }
+QMainWindow, QWidget#shell { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0c1829, stop:0.55 #090f1c, stop:1 #0c1623); }
+QWidget#settingsPage { background: #0a1422; }
+QWidget#sidebar { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #101e30, stop:1 #0b1423); border-right: 1px solid #1b3248; }
+QLabel#brand { font-size: 31px; font-weight: 600; letter-spacing: 5px; color: #c5f5ff; }
+QLabel#eyebrow { color: #759aaf; font-size: 10px; letter-spacing: 2px; font-weight: 500; }
+QLabel#title { font-size: 26px; font-weight: 600; color: #eef8ff; }
+QLabel#stateTitle { font-size: 24px; font-weight: 500; color: #d9f9ff; }
+QLabel#subtitle { color: #91aabd; font-size: 12px; }
+QLabel#clock { font-size: 29px; font-weight: 300; color: #dff6ff; }
+QLabel#number { font-size: 25px; font-weight: 500; color: #e3f6ff; }
+QLabel#statusPill { color: #6fdfd6; background: #102b35; border: 1px solid #234854; border-radius: 7px; padding: 7px 10px; font-size: 11px; }
+QLabel#warning { color: #e5ba7a; font-size: 11px; }
+QFrame#card { background: qlineargradient(x1:0, y1:0, x2:0.7, y2:1, stop:0 #112237, stop:1 #0c192a); border: 1px solid #21394e; border-radius: 15px; }
+QFrame#conversation { background: #0d192a; border: 1px solid #21394e; border-radius: 15px; }
+QFrame#composer { background: #112338; border: 1px solid #2d5066; border-radius: 12px; }
+QPushButton { background: #162b40; border: 1px solid #29475c; border-radius: 8px; padding: 10px 13px; color: #cfdfeb; }
+QPushButton:hover { background: #1b3a50; border-color: #58c6d3; color: #edfaff; }
+QPushButton:pressed { background: #244c61; }
+QPushButton:disabled { color: #557083; background: #112033; border-color: #1c3346; }
+QPushButton#primary { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #78e4e7, stop:1 #39bacf); color: #08212c; font-weight: 600; border: 1px solid #78e4e7; }
+QPushButton#primary:hover { background: #90f1ef; }
+QPushButton#nav { text-align: left; background: transparent; border: 0; padding: 13px 14px; color: #94abbe; border-radius: 8px; }
+QPushButton#nav:hover { background: #152c3e; color: #d1eff8; }
+QPushButton#nav:checked { background: #17354a; color: #b0f6fa; border: 1px solid #2a4c61; }
+QPushButton#small { padding: 6px 10px; font-size: 11px; }
+QPushButton#link { background: transparent; border: 0; color: #70d5e3; padding: 3px 0; font-size: 11px; text-align: left; }
+QLineEdit, QTextBrowser, QComboBox, QSpinBox, QDoubleSpinBox { background: #0b1828; border: 1px solid #2a4258; border-radius: 8px; padding: 10px; selection-background-color: #236a7a; }
+QLineEdit:focus, QComboBox:focus { border-color: #51cddc; }
+QLineEdit#commandInput { background: transparent; border: 0; padding: 6px; font-size: 14px; }
+QTextBrowser#chat { background: transparent; border: 0; padding: 2px; font-size: 13px; }
+QComboBox::drop-down { border: 0; width: 24px; }
+QComboBox QAbstractItemView { background: #14283b; selection-background-color: #264b60; border: 1px solid #37566b; padding: 6px; }
 QScrollArea, QListWidget { background: transparent; border: 0; }
-QScrollBar:vertical { background: #101b27; width: 8px; }
-QScrollBar::handle:vertical { background: #2c4c60; border-radius: 4px; min-height: 30px; }
+QListWidget::item { border-bottom: 1px solid #1e3348; padding: 10px; }
+QListWidget::item:selected { background: #19384b; border-radius: 6px; }
+QScrollBar:vertical { background: transparent; width: 7px; margin: 4px; }
+QScrollBar::handle:vertical { background: #2b4d64; border-radius: 3px; min-height: 30px; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QCheckBox { spacing: 10px; }
-QCheckBox::indicator { width: 17px; height: 17px; border: 1px solid #426075; border-radius: 4px; background: #0a1722; }
-QCheckBox::indicator:checked { background: #43cddd; }
+QCheckBox::indicator { width: 17px; height: 17px; border: 1px solid #466980; border-radius: 4px; background: #0b1b2b; }
+QCheckBox::indicator:checked { background: #57cbd9; border-color: #86e7eb; }
 QSlider::groove:horizontal { height: 4px; background: #263e50; border-radius: 2px; }
 QSlider::handle:horizontal { background: #57dae6; width: 13px; margin: -5px 0; border-radius: 6px; }
+QProgressBar { border: 1px solid #29475b; border-radius: 4px; background: #0b1b2a; color: #cee8f3; height: 11px; text-align: center; font-size: 10px; }
+QProgressBar::chunk { background: #3db5c8; border-radius: 3px; }
 QMenu { background: #101f2c; border: 1px solid #29475c; }
 QMenu::item { padding: 10px 22px; }
 QMenu::item:selected { background: #214457; }
-QToolTip { background: #15293a; color: #d8f1fa; border: 1px solid #3f6479; }
+QToolTip { background: #15293a; color: #d8f1fa; border: 1px solid #3f6479; padding: 5px; }
 """
 
 
@@ -84,60 +100,6 @@ def card():
     return frame, layout
 
 
-class Reactor(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.setMinimumSize(280, 255)
-        self.setMaximumHeight(310)
-        self.phase = 0
-        self.amplitude = 0
-        self.mode = "STANDING BY"
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.animate)
-        self.timer.start(40)
-
-    def animate(self):
-        self.phase = (self.phase + 0.65) % 360
-        self.amplitude *= 0.93
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        center = QPointF(self.width() / 2, self.height() / 2 - 8)
-        radius = min(self.width(), self.height()) * 0.37
-        cyan = QColor("#56dfea")
-        for offset, alpha in [(13, 12), (8, 20), (4, 30)]:
-            painter.setPen(QPen(QColor(60, 210, 230, alpha), offset * 2))
-            painter.drawEllipse(center, radius * .65, radius * .65)
-        for scale, speed, width in [(1, 1, 2), (.87, -1.3, 1), (.67, .55, 3)]:
-            r = radius * scale
-            painter.setPen(QPen(QColor("#193c4e"), width))
-            painter.drawEllipse(center, r, r)
-            painter.setPen(QPen(cyan, width))
-            rect = (int(center.x()-r), int(center.y()-r), int(r*2), int(r*2))
-            for start in [0, 120, 240]:
-                painter.drawArc(*rect, int((start+self.phase*speed)*16), 70*16)
-        for i in range(48):
-            angle = math.radians(i*7.5 + self.phase * .15)
-            r = radius * 1.1
-            length = 5 + (9 if i%4 == 0 else 0) + min(self.amplitude*150, 22)
-            painter.setPen(QPen(QColor("#38697c"), 2))
-            painter.drawLine(QPointF(center.x()+math.cos(angle)*r, center.y()+math.sin(angle)*r),
-                             QPointF(center.x()+math.cos(angle)*(r+length), center.y()+math.sin(angle)*(r+length)))
-        painter.setPen(QPen(cyan, 2))
-        inner = radius * .37
-        points = [QPointF(center.x()+math.cos(math.radians(270+i*120))*inner,
-                         center.y()+math.sin(math.radians(270+i*120))*inner) for i in range(3)]
-        painter.setBrush(QColor(53, 193, 222, 25))
-        painter.drawPolygon(points)
-        painter.setBrush(QColor("#78edfa"))
-        painter.drawEllipse(center, 4, 4)
-        painter.setFont(QFont("Segoe UI", 9))
-        painter.setPen(QColor("#76a6bb"))
-        painter.drawText(0, self.height()-24, self.width(), 24, Qt.AlignmentFlag.AlignCenter, self.mode)
-
-
 class Telemetry(QObject):
     gpu = Signal(object, str)
 
@@ -152,13 +114,23 @@ class Window(QMainWindow):
         self.assistant = Assistant(self.store, self.apps, self.speaker)
         self.asleep = False
         self.quitting = False
+        self.processing = False
+        self.preparing = False
+        self.speaking = False
+        self.listening_transition = False
+        self.listen_request = 0
+        self.last_transcript = ""
+        self.input_warning = ""
+        self.last_mic_level = 0.0
+        self.voice_state = "Voice setup"
+        self.brain_message = "Conversation setup"
         self.gpu_value = None
         self.gpu_busy = False
         self.telemetry = Telemetry()
         self.telemetry.gpu.connect(self.gpu_updated)
         self.setWindowTitle(f"JARVIS {__version__} · Desktop Assistant")
-        self.resize(1160, 790)
-        self.setMinimumSize(950, 680)
+        self.resize(1280, 850)
+        self.setMinimumSize(1020, 740)
         self.setWindowIcon(self.make_icon())
         shell = QWidget()
         shell.setObjectName("shell")
@@ -169,14 +141,15 @@ class Window(QMainWindow):
 
         side = QWidget()
         side.setObjectName("sidebar")
-        side.setFixedWidth(205)
+        side.setFixedWidth(208)
         sidebar = QVBoxLayout(side)
-        sidebar.setContentsMargins(22, 30, 18, 24)
-        sidebar.addWidget(label("J.A.R.V.I.S.", "brand"))
-        sidebar.addWidget(label("DESKTOP ASSISTANT", "eyebrow"))
-        sidebar.addSpacing(38)
+        sidebar.setContentsMargins(20, 32, 18, 24)
+        sidebar.setSpacing(8)
+        sidebar.addWidget(label("JARVIS", "brand"))
+        sidebar.addWidget(label("PERSONAL ASSISTANT", "eyebrow"))
+        sidebar.addSpacing(33)
         self.nav_buttons = []
-        for index, name in enumerate(["◈  Command centre", "✓  My tasks", "▦  Applications", "⚙  Settings"]):
+        for index, name in enumerate(["◈  Command centre", "✓  Tasks", "▦  Applications", "⚙  Settings"]):
             nav = button(name)
             nav.setObjectName("nav")
             nav.setCheckable(True)
@@ -184,20 +157,26 @@ class Window(QMainWindow):
             self.nav_buttons.append(nav)
             sidebar.addWidget(nav)
         sidebar.addStretch()
-        self.state_label = label("●  ONLINE", "subtitle")
+        self.state_label = label("◌  VOICE SETUP", "statusPill")
         sidebar.addWidget(self.state_label)
-        sidebar.addWidget(label(f"WINDOWS · v{__version__}", "eyebrow"))
+        sidebar.addSpacing(4)
+        sidebar.addWidget(label(f"WINDOWS 10 / 11  ·  {__version__}", "eyebrow"))
         sidebar.addSpacing(15)
         sidebar.addWidget(button("☾  Sleep mode", self.sleep))
         sidebar.addWidget(button("Quit JARVIS", self.quit))
         root.addWidget(side)
 
         content = QVBoxLayout()
-        content.setContentsMargins(30, 24, 30, 23)
+        content.setContentsMargins(30, 27, 30, 25)
+        content.setSpacing(14)
         header = QHBoxLayout()
         titles = QVBoxLayout()
-        titles.addWidget(label("At your service.", "title"))
-        titles.addWidget(label("Your desktop. Your voice. Your command.", "subtitle"))
+        titles.setSpacing(5)
+        titles.addWidget(label("YOUR PERSONAL ASSISTANT", "eyebrow"))
+        self.page_title = label("At your service, boss.", "title")
+        titles.addWidget(self.page_title)
+        self.page_subtitle = label("Speak naturally. Make things happen.", "subtitle")
+        titles.addWidget(self.page_subtitle)
         header.addLayout(titles)
         header.addStretch()
         clock_box = QVBoxLayout()
@@ -209,15 +188,23 @@ class Window(QMainWindow):
         clock_box.addWidget(self.date_label)
         header.addLayout(clock_box)
         content.addLayout(header)
-        content.addSpacing(20)
         stats = QHBoxLayout()
+        stats.setSpacing(13)
         self.stat_labels = {}
+        self.stat_charts = {}
         for title in ["CPU", "GPU", "MEMORY"]:
             frame, layout = card()
+            layout.setContentsMargins(18, 12, 18, 11)
+            layout.setSpacing(4)
             layout.addWidget(label(title + " UTILISATION", "eyebrow"))
+            metric_row = QHBoxLayout()
             value = label("—", "number")
             self.stat_labels[title] = value
-            layout.addWidget(value)
+            metric_row.addWidget(value)
+            chart = Sparkline("#75aecf" if title == "MEMORY" else "#6c9dde" if title == "GPU" else "#51d0d8")
+            self.stat_charts[title] = chart
+            metric_row.addWidget(chart, 1)
+            layout.addLayout(metric_row)
             stats.addWidget(frame)
         content.addLayout(stats)
         self.stack = QStackedWidget()
@@ -245,15 +232,26 @@ class Window(QMainWindow):
         self.assistant.changed_tasks.connect(self.refresh_tasks)
         self.assistant.sleep_requested.connect(self.sleep)
         self.assistant.wake_requested.connect(self.wake)
-        self.assistant.busy.connect(lambda busy: self.set_mode("PROCESSING" if busy else "LISTENING"))
+        self.assistant.busy.connect(self.assistant_busy)
         self.listener.wake.connect(self.wake)
         self.listener.command.connect(self.assistant.submit)
-        self.listener.status.connect(self.microphone_status.setText)
-        self.listener.status.connect(lambda text: self.retry_voice.setVisible("unavailable" in text.lower()))
-        self.listener.transcript.connect(lambda text: self.heard_label.setText("Heard: " + text))
+        self.listener.status.connect(self.microphone_changed)
+        self.listener.transcript.connect(self.transcript_changed)
         self.listener.level.connect(self.level_changed)
-        self.speaker.speaking.connect(lambda speaking: self.set_mode("SPEAKING" if speaking else "LISTENING"))
+        self.speaker.speaking.connect(self.speech_changed)
         self.speaker.problem.connect(lambda text: self.add_message("SYSTEM", text))
+        if hasattr(self.listener, "partial"):
+            self.listener.partial.connect(self.partial_changed)
+        if hasattr(self.listener, "state"):
+            self.listener.state.connect(self.listener_state_changed)
+        if hasattr(self.listener, "input_device"):
+            self.listener.input_device.connect(self.input_device_changed)
+        if hasattr(self.listener, "warning"):
+            self.listener.warning.connect(self.input_warning_changed)
+        if hasattr(self.speaker, "preparing"):
+            self.speaker.preparing.connect(self.preparing_changed)
+        if hasattr(self.assistant, "brain_status"):
+            self.assistant.brain_status.connect(self.brain_status_changed)
         self.clock_timer = QTimer(self)
         self.clock_timer.timeout.connect(self.update_stats)
         self.clock_timer.start(1000)
@@ -262,7 +260,7 @@ class Window(QMainWindow):
         self.gpu_timer.start(5000)
         self.update_stats()
         self.refresh_tasks()
-        self.add_message("JARVIS", "Welcome, boss. Say ‘Hey Jarvis’, clap twice, or type a command below. Your tasks stay saved on this PC. Type ‘help’ for commands.")
+        self.add_message("JARVIS", "At your service, boss. Say ‘Hey Jarvis’, then tell me what you need. You can also click Listen or type below.")
         if start_workers:
             self.speaker.start()
             self.assistant.start()
@@ -288,49 +286,132 @@ class Window(QMainWindow):
     def build_dashboard(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 20, 0, 0)
-        top = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+        middle = QHBoxLayout()
+        middle.setSpacing(15)
+
         reactor_card, reactor_layout = card()
+        reactor_card.setMinimumWidth(295)
+        reactor_card.setMaximumWidth(350)
+        reactor_layout.setContentsMargins(18, 15, 18, 15)
+        reactor_layout.setSpacing(5)
         self.reactor = Reactor()
-        reactor_layout.addWidget(self.reactor)
-        reactor_card.setFixedWidth(335)
-        top.addWidget(reactor_card)
-        control_card, controls = card()
-        controls.addWidget(label("VOICE LINK", "eyebrow"))
-        controls.addWidget(label("Ready when you are.", "title"))
-        self.microphone_status = label("Microphone initialising…", "subtitle")
-        self.microphone_status.setWordWrap(True)
-        controls.addWidget(self.microphone_status)
+        reactor_layout.addWidget(label("VOICE CONNECTION", "eyebrow"))
+        reactor_layout.addWidget(self.reactor, 1)
+        self.activity_title = label("Getting ready", "stateTitle")
+        self.activity_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        reactor_layout.addWidget(self.activity_title)
+        self.activity_hint = label("Preparing offline speech recognition…", "subtitle")
+        self.activity_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.activity_hint.setWordWrap(True)
+        reactor_layout.addWidget(self.activity_hint)
+        self.mic_meter = MicrophoneMeter()
+        reactor_layout.addWidget(self.mic_meter)
+        mic_row = QHBoxLayout()
+        self.mic_device_label = label("MICROPHONE", "eyebrow")
+        self.mic_device_label.setMaximumWidth(210)
+        self.mic_device_label.setToolTip("The active Windows microphone appears here after voice setup.")
+        mic_row.addWidget(self.mic_device_label, 1)
+        self.mic_level_label = label("0%", "subtitle")
+        mic_row.addWidget(self.mic_level_label)
+        reactor_layout.addLayout(mic_row)
+        self.microphone_status = self.activity_hint
+        self.warning_label = label("", "warning")
+        self.warning_label.setWordWrap(True)
+        self.warning_label.hide()
+        reactor_layout.addWidget(self.warning_label)
         self.retry_voice = button("Retry voice setup", self.start_voice)
         self.retry_voice.setObjectName("small")
         self.retry_voice.hide()
-        controls.addWidget(self.retry_voice)
-        self.heard_label = label("Wake word: Hey Jarvis  ·  Double clap: ON", "subtitle")
-        self.heard_label.setWordWrap(True)
-        controls.addWidget(self.heard_label)
-        controls.addStretch()
-        controls.addWidget(button("🎙  Listen to my next command", self.listen, True))
-        controls.addSpacing(5)
-        controls.addWidget(label("SPOTIFY DESKTOP CONTROLS", "eyebrow"))
+        reactor_layout.addWidget(self.retry_voice)
+        actions = QHBoxLayout()
+        self.listen_button = button("◉  Listen", self.listen, True)
+        self.listen_button.setToolTip("Start a voice command. This also stops JARVIS's current reply.")
+        actions.addWidget(self.listen_button, 1)
+        self.stop_button = button("Stop reply", self.stop_reply)
+        self.stop_button.setEnabled(False)
+        actions.addWidget(self.stop_button)
+        reactor_layout.addLayout(actions)
+        reactor_layout.addSpacing(4)
+        reactor_layout.addWidget(label("SPOTIFY", "eyebrow"))
         spotify_row = QHBoxLayout()
+        spotify_row.setSpacing(5)
         for name, command in [("Previous", "previous song"), ("Play", "play spotify"), ("Pause", "pause music"), ("Next", "next song")]:
-            b = button(name, lambda checked=False, text=command: self.assistant.submit(text))
-            b.setObjectName("small")
-            spotify_row.addWidget(b)
-        controls.addLayout(spotify_row)
-        top.addWidget(control_card, 1)
-        layout.addLayout(top)
+            control = button(name, lambda checked=False, text=command: self.assistant.submit(text))
+            control.setObjectName("small")
+            spotify_row.addWidget(control)
+        reactor_layout.addLayout(spotify_row)
+        middle.addWidget(reactor_card, 2)
+
+        conversation = QFrame()
+        conversation.setObjectName("conversation")
+        chat_layout = QVBoxLayout(conversation)
+        chat_layout.setContentsMargins(21, 19, 21, 17)
+        chat_layout.setSpacing(11)
+        conversation_header = QHBoxLayout()
+        conversation_header.addWidget(label("CONVERSATION", "eyebrow"))
+        conversation_header.addStretch()
+        provider = self.store.settings.get("ai_provider", "Local commands")
+        badge = "Local AI setup" if provider == "Built-in AI (local)" else "Ollama" if provider == "Ollama (local)" else "OpenAI" if provider == "OpenAI" else "Local commands"
+        self.brain_badge = label(badge, "subtitle")
+        self.brain_badge.setToolTip("Natural conversation can be enabled in Settings.")
+        conversation_header.addWidget(self.brain_badge)
+        chat_layout.addLayout(conversation_header)
         self.chat = QTextBrowser()
+        self.chat.setObjectName("chat")
         self.chat.setOpenExternalLinks(False)
-        self.chat.setMinimumHeight(120)
-        layout.addWidget(self.chat, 1)
-        entry = QHBoxLayout()
+        self.chat.setMinimumHeight(160)
+        self.chat.document().setDefaultStyleSheet("p { line-height: 1.5; }")
+        chat_layout.addWidget(self.chat, 1)
+        self.partial_label = label("", "subtitle")
+        self.partial_label.setWordWrap(True)
+        self.partial_label.hide()
+        chat_layout.addWidget(self.partial_label)
+        heard_row = QHBoxLayout()
+        self.heard_label = label("Say ‘Hey Jarvis’ to start a conversation.", "subtitle")
+        self.heard_label.setWordWrap(True)
+        self.heard_label.setTextFormat(Qt.TextFormat.PlainText)
+        heard_row.addWidget(self.heard_label, 1)
+        self.edit_heard_button = button("Edit words", self.edit_heard)
+        self.edit_heard_button.setObjectName("link")
+        self.edit_heard_button.hide()
+        heard_row.addWidget(self.edit_heard_button)
+        chat_layout.addLayout(heard_row)
+        self.brain_progress = QProgressBar()
+        self.brain_progress.setRange(0, 100)
+        self.brain_progress.hide()
+        chat_layout.addWidget(self.brain_progress)
+        self.brain_download_label = label("", "subtitle")
+        self.brain_download_label.setWordWrap(True)
+        self.brain_download_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.brain_download_label.hide()
+        chat_layout.addWidget(self.brain_download_label)
+        middle.addWidget(conversation, 3)
+        layout.addLayout(middle, 1)
+
+        composer = QFrame()
+        composer.setObjectName("composer")
+        entry = QHBoxLayout(composer)
+        entry.setContentsMargins(14, 9, 9, 9)
+        entry.setSpacing(12)
+        entry.addWidget(label("›", "number"))
         self.command_entry = QLineEdit()
-        self.command_entry.setPlaceholderText('Try play "Hello by Adele" or search Chrome for weather')
+        self.command_entry.setObjectName("commandInput")
+        self.command_entry.setPlaceholderText('Say hello to Sarah, play a song, or add a task…')
         self.command_entry.returnPressed.connect(self.submit_entry)
         entry.addWidget(self.command_entry, 1)
         entry.addWidget(button("Send  ↗", self.submit_entry, True))
-        layout.addLayout(entry)
+        layout.addWidget(composer)
+        suggestions = QHBoxLayout()
+        suggestions.setSpacing(14)
+        suggestions.addWidget(label("TRY ASKING", "eyebrow"))
+        for title, command in [("Say hello to Sarah", "say hello to Sarah"), ("Play a song", "play Hello by Adele"), ("Add a task", "add task ")]:
+            shortcut = button(title, lambda checked=False, text=command: self.suggest_command(text))
+            shortcut.setObjectName("link")
+            suggestions.addWidget(shortcut)
+        suggestions.addStretch()
+        layout.addLayout(suggestions)
         self.stack.addWidget(page)
 
     def build_tasks(self):
@@ -374,11 +455,13 @@ class Window(QMainWindow):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 20, 10, 0)
         layout.addWidget(label("Make it yours.", "title"))
-        layout.addWidget(label("Voice, activation, Spotify, and optional conversational AI.", "subtitle"))
+        layout.addWidget(label("Fine-tune your microphone, natural voice, and conversation.", "subtitle"))
         form = QFormLayout()
         form.setVerticalSpacing(15)
+        form.setHorizontalSpacing(22)
         options = self.store.settings
         self.settings_widgets = {}
+        form.addRow(label("ACTIVATION", "eyebrow"))
         for key, text in [("wake_enabled", "Listen for Hey Jarvis"), ("clap_enabled", "Activate with two claps"),
                           ("spotify_on_wake", "Start Spotify when waking"), ("start_sleeping", "Open in sleep mode")]:
             widget = QCheckBox(text)
@@ -405,6 +488,29 @@ class Window(QMainWindow):
         microphone.setCurrentIndex(max(0, selected))
         self.settings_widgets["microphone"] = microphone
         form.addRow("Microphone (restart required)", microphone)
+        recognition = QComboBox()
+        recognition.addItem("Accurate English · 128 MB download", "accurate")
+        recognition.addItem("Compact English · 40 MB download", "compact")
+        recognition.setCurrentIndex(max(0, recognition.findData(options.get("recognition_model", "compact"))))
+        self.settings_widgets["recognition_model"] = recognition
+        form.addRow("Recognition (restart required)", recognition)
+        enhanced = QCheckBox("Enhanced offline transcription (Whisper)")
+        enhanced.setChecked(options.get("enhanced_transcription", True))
+        self.settings_widgets["enhanced_transcription"] = enhanced
+        form.addRow(enhanced)
+        gain = QDoubleSpinBox()
+        gain.setRange(1.0, 4.0)
+        gain.setSingleStep(.25)
+        gain.setDecimals(2)
+        gain.setSuffix(" ×")
+        gain.setValue(options.get("microphone_gain", 1.0))
+        gain.setToolTip("Increase for a quiet microphone. Reduce if the dashboard warns about clipping.")
+        self.settings_widgets["microphone_gain"] = gain
+        form.addRow("Microphone gain", gain)
+        recognition_note = label("The compact model detects wake words quickly. Enhanced transcription downloads a second offline model (118 MB) to interpret your command. The 128 MB recognizer is another option to try. Watch the input meter while speaking and use ‘Edit words’ to correct a misheard command. Restart after changing recognition options.", "subtitle")
+        recognition_note.setWordWrap(True)
+        form.addRow(recognition_note)
+        form.addRow(label("NATURAL VOICE", "eyebrow"))
         engine = QComboBox()
         engine.addItem("British male · natural online voice", "neural")
         engine.addItem("Windows voice · offline", "windows")
@@ -430,17 +536,18 @@ class Window(QMainWindow):
         speech_volume.setValue(options["speech_volume"])
         self.settings_widgets["speech_volume"] = speech_volume
         form.addRow("Speech volume", speech_volume)
-        form.addRow(button("Test voice", lambda: self.speaker.say("Good morning, boss. All systems are standing by.")))
+        form.addRow(button("Test natural voice", lambda: self.speaker.say("Hello, boss. How can I help you today?")))
         form.addRow(button("Windows voice settings", lambda: os.startfile("ms-settings:speech") if IS_WINDOWS else None))
         note = label("Natural voice: Ryan, British English. Requires internet and sends reply text to Microsoft's speech service. Microphone recognition stays offline. If unavailable, JARVIS uses your installed Windows voice. Install an English (United Kingdom) male Windows voice for a British offline voice.", "subtitle")
         note.setWordWrap(True)
         form.addRow(note)
+        form.addRow(label("MUSIC & CONVERSATION", "eyebrow"))
         uri = QLineEdit(options["spotify_uri"])
         uri.setPlaceholderText("Optional spotify:playlist:… or spotify:track:…")
         self.settings_widgets["spotify_uri"] = uri
         form.addRow("Spotify wake URI", uri)
         provider = QComboBox()
-        provider.addItems(["Local commands", "Ollama (local)", "OpenAI"])
+        provider.addItems(["Built-in AI (local)", "Local commands", "Ollama (local)", "OpenAI"])
         provider.setCurrentText(options["ai_provider"])
         provider.currentTextChanged.connect(self.provider_changed)
         self.settings_widgets["ai_provider"] = provider
@@ -453,11 +560,12 @@ class Window(QMainWindow):
         self.api_key_entry.setEchoMode(QLineEdit.EchoMode.Password)
         self.api_key_entry.setPlaceholderText("Optional API key · kept only for this session")
         form.addRow("OpenAI API key", self.api_key_entry)
-        ai_note = label("Ollama: install Ollama and pull llama3.2 first. OpenAI requires your own API key and incurs usage charges. Cloud conversation sends the request and tool results to your provider. Audio recognition stays local.", "subtitle")
+        ai_note = label("Built-in AI downloads its local conversation model on first use (about 1.1 GB) and needs about 2 GB of free memory. It runs on this PC through a local-only connection and needs no API key. Ollama requires a separately installed model. OpenAI requires your own key and has usage charges; it receives your requests and tool results. Microphone audio stays local.", "subtitle")
         ai_note.setWordWrap(True)
         form.addRow(ai_note)
         layout.addLayout(form)
         layout.addWidget(button("Save settings", self.save_settings, True))
+        layout.addWidget(button("Enable natural conversation", self.enable_conversation))
         layout.addWidget(button("Install local conversational AI (Ollama)", self.install_ai))
         self.settings_status = label("", "subtitle")
         layout.addWidget(self.settings_status)
@@ -467,7 +575,15 @@ class Window(QMainWindow):
 
     def provider_changed(self, provider):
         if "ai_model" in self.settings_widgets:
-            self.settings_widgets["ai_model"].setText("gpt-4.1-mini" if provider == "OpenAI" else "llama3.2")
+            self.settings_widgets["ai_model"].setText("gpt-4.1-mini" if provider == "OpenAI" else "qwen2.5-1.5b-instruct" if provider == "Built-in AI (local)" else "llama3.2")
+
+    def enable_conversation(self):
+        self.settings_widgets["ai_provider"].setCurrentText("Built-in AI (local)")
+        self.save_settings()
+        if hasattr(self.assistant, "start_brain"):
+            self.assistant.start_brain()
+            self.settings_status.setText("Preparing local conversation. Follow its download progress in Command centre.")
+            self.navigate(0)
 
     def install_ai(self):
         if IS_WINDOWS:
@@ -479,6 +595,19 @@ class Window(QMainWindow):
             return
         self.retry_voice.hide()
         if model_path(self.store):
+            if self.store.settings.get("enhanced_transcription", True):
+                from .transcription import WhisperTranscriber, TranscriptionInstaller
+                if not WhisperTranscriber(self.store).ready():
+                    if hasattr(self, "transcription_installer") and self.transcription_installer.isRunning():
+                        return
+                    self.transcription_installer = TranscriptionInstaller(self.store)
+                    self.transcription_installer.progress.connect(lambda percent: self.microphone_status.setText(f"Preparing enhanced offline transcription… {percent}%"))
+                    self.transcription_installer.ready.connect(self.start_voice)
+                    self.transcription_installer.failed.connect(self.transcription_download_failed)
+                    self.microphone_status.setText("Downloading enhanced offline transcription… 118 MB")
+                    self.set_mode("VOICE SETUP")
+                    self.transcription_installer.start()
+                    return
             self.listener.start()
             return
         if hasattr(self, "model_installer") and self.model_installer.isRunning():
@@ -487,12 +616,20 @@ class Window(QMainWindow):
         self.model_installer.progress.connect(lambda percent: self.microphone_status.setText(f"Downloading offline voice model… {percent}%"))
         self.model_installer.ready.connect(self.start_voice)
         self.model_installer.failed.connect(self.voice_download_failed)
-        self.microphone_status.setText("Downloading the 40 MB offline voice model…")
+        spec = MODELS[selected_model_key(self.store)]
+        self.microphone_status.setText(f"Downloading {spec.label.lower()} recognition… {spec.download_mb} MB")
+        self.set_mode("VOICE SETUP")
         self.model_installer.start()
 
     def voice_download_failed(self, message):
         self.microphone_status.setText(message)
+        self.voice_state = "Voice unavailable"
+        self.set_mode("VOICE UNAVAILABLE")
         self.retry_voice.show()
+
+    def transcription_download_failed(self, message):
+        self.add_message("SYSTEM", message + " Basic offline recognition is still available. Restart JARVIS to retry enhanced transcription, or turn it off in Settings.")
+        self.listener.start()
 
     def save_settings(self):
         values = {}
@@ -502,7 +639,7 @@ class Window(QMainWindow):
             elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
                 values[key] = widget.value()
             elif isinstance(widget, QComboBox):
-                values[key] = widget.currentData() if key in {"microphone", "voice", "speech_engine"} else widget.currentText()
+                values[key] = widget.currentData() if key in {"microphone", "voice", "speech_engine", "recognition_model"} else widget.currentText()
             else:
                 values[key] = widget.text().strip()
         if values["spotify_uri"] and not values["spotify_uri"].startswith(("spotify:playlist:", "spotify:track:", "spotify:album:")):
@@ -510,10 +647,18 @@ class Window(QMainWindow):
             return
         self.store.update_settings(values)
         self.assistant.api_key = self.api_key_entry.text().strip()
-        self.settings_status.setText("Settings saved. Restart after changing microphones. API keys remain in memory only.")
+        self.settings_status.setText("Settings saved. Restart to apply microphone or recognition model changes. API keys stay in memory only.")
 
     def navigate(self, index):
         self.stack.setCurrentIndex(index)
+        titles = [
+            ("At your service, boss.", "Speak naturally. Make things happen."),
+            ("A clear mind. A clear plan.", "Your tasks, saved on this PC."),
+            ("Your desktop, connected.", "Find an application and ask JARVIS to open it."),
+            ("Designed around you.", "Fine-tune the way we talk."),
+        ]
+        self.page_title.setText(titles[index][0])
+        self.page_subtitle.setText(titles[index][1])
         for i, nav in enumerate(self.nav_buttons):
             nav.setChecked(i == index)
         if index == 1:
@@ -570,7 +715,7 @@ class Window(QMainWindow):
             self.task_list.addItem("Your list is clear. Add your first task above or by voice.")
         for index, task in enumerate(tasks):
             item = QListWidgetItem()
-            item.setSizeHint(__import__('PySide6.QtCore', fromlist=['QSize']).QSize(400, 64))
+            item.setSizeHint(QSize(400, 64))
             widget = QWidget()
             row = QHBoxLayout(widget)
             done = QCheckBox(f"{index + 1}. {task['text']}")
@@ -596,23 +741,166 @@ class Window(QMainWindow):
     def submit_entry(self):
         text = self.command_entry.text().strip()
         if text:
+            if self.speaking or self.preparing:
+                self.stop_reply()
             self.assistant.submit(text)
             self.command_entry.clear()
 
+    def suggest_command(self, command):
+        self.command_entry.setText(command)
+        self.command_entry.setFocus()
+        self.command_entry.setCursorPosition(len(command))
+
+    def edit_heard(self):
+        if self.last_transcript:
+            self.suggest_command(self.last_transcript)
+
     def add_message(self, sender, text):
-        color = "#5edeea" if sender == "JARVIS" else "#9ab2c7"
-        self.chat.append(f'<p style="color:{color};font-size:10px;letter-spacing:1px;margin-bottom:4px">{sender} · {datetime.datetime.now():%H:%M}</p><p style="color:#d8e8f2;line-height:1.5;margin-bottom:14px">{html.escape(text).replace(chr(10), "<br>")}</p>')
+        color = "#7adce4" if sender == "JARVIS" else "#a3bacb" if sender == "YOU" else "#e5ba7a"
+        background = "#132a3e" if sender == "JARVIS" else "#172538" if sender == "YOU" else "#2c2a2b"
+        escaped = html.escape(str(text)).replace(chr(10), "<br>")
+        self.chat.append(
+            f'<p style="color:{color};font-size:10px;margin-top:10px;margin-bottom:6px">'
+            f'{html.escape(sender)} &nbsp; · &nbsp; {datetime.datetime.now():%H:%M}</p>'
+            f'<table width="100%" bgcolor="{background}" cellspacing="0" cellpadding="11"><tr><td>'
+            f'<span style="color:#dfedf6;font-size:13px">{escaped}</span></td></tr></table>'
+            '<p style="font-size:3px;margin:0">&nbsp;</p>'
+        )
         self.chat.verticalScrollBar().setValue(self.chat.verticalScrollBar().maximum())
 
     def set_mode(self, text):
-        self.reactor.mode = "SLEEP MODE · WAKE WORD ARMED" if self.asleep else text
+        normalized = str(text).upper()
+        self.reactor.mode = "SLEEP MODE" if self.asleep else normalized
         self.reactor.update()
+        if self.asleep:
+            title, badge = "Standing by", "◌  SLEEP MODE"
+        elif normalized == "STOPPING REPLY":
+            title, badge = "One moment", "◌  SWITCHING TO LISTEN"
+        elif "UNAVAILABLE" in normalized:
+            title, badge = "Voice unavailable", "◌  CHECK VOICE SETUP"
+        elif self.speaking or "SPEAKING" in normalized:
+            title, badge = "Speaking", "●  SPEAKING"
+        elif self.preparing or "PREPARING" in normalized:
+            title, badge = "Preparing reply", "◌  PREPARING REPLY"
+        elif self.processing or any(word in normalized for word in ("PROCESSING", "THINKING")):
+            title, badge = "Thinking", "◌  WORKING"
+        elif any(word in normalized for word in ("TRANSCRIB", "RECOGNIZ", "UNDERSTAND")):
+            title, badge = "Understanding", "◌  UNDERSTANDING"
+        elif "SETUP" in normalized or not self.listener.ready:
+            title, badge = "Getting ready", "◌  VOICE SETUP"
+        elif "LISTENING" in normalized:
+            title, badge = "Listening", "●  LISTENING"
+        else:
+            title, badge = "Ready when you are", "●  MICROPHONE READY"
+        self.activity_title.setText(title)
+        self.state_label.setText(badge)
+        self.stop_button.setEnabled(self.speaking or self.preparing)
+
+    def refresh_mode(self):
+        mode = "STOPPING REPLY" if self.listening_transition else "SPEAKING" if self.speaking else "PREPARING REPLY" if self.preparing else "PROCESSING" if self.processing else self.voice_state
+        self.set_mode(mode)
+
+    def assistant_busy(self, busy):
+        self.processing = bool(busy)
+        self.refresh_mode()
+
+    def speech_changed(self, speaking):
+        self.speaking = bool(speaking)
+        if speaking:
+            self.partial_label.hide()
+        self.refresh_mode()
+
+    def preparing_changed(self, preparing):
+        self.preparing = bool(preparing)
+        self.refresh_mode()
+
+    def microphone_changed(self, message):
+        self.microphone_status.setText(message)
+        failed = any(word in message.lower() for word in ("unavailable", "failed", "missing", "can't", "cannot"))
+        self.retry_voice.setVisible(failed)
+        if failed:
+            self.voice_state = "Voice unavailable"
+        elif self.listener.ready:
+            self.voice_state = "Standby"
+        self.refresh_mode()
+
+    def listener_state_changed(self, state):
+        self.voice_state = state
+        self.refresh_mode()
+
+    def input_device_changed(self, device):
+        self.mic_device_label.setText(device)
+        self.mic_device_label.setToolTip(device)
+
+    def transcript_changed(self, text):
+        self.last_transcript = text
+        self.heard_label.setText("Heard: “" + text + "”")
+        self.edit_heard_button.setVisible(bool(text))
+        self.partial_label.clear()
+        self.partial_label.hide()
+
+    def partial_changed(self, text):
+        self.partial_label.setText("Hearing: “" + text + "”…" if text else "")
+        self.partial_label.setVisible(bool(text))
+
+    def input_warning_changed(self, message):
+        self.input_warning = message
+        self.warning_label.setText(message)
+        self.warning_label.setVisible(bool(message))
+        self.mic_meter.feed(self.last_mic_level, "clip" in message.lower())
+
+    def brain_status_changed(self, message, percent):
+        self.brain_message = message
+        self.brain_badge.setToolTip(message)
+        lowered = message.lower()
+        failed = any(word in lowered for word in ("failed", "unavailable", "error"))
+        ready = not failed and "not ready" not in lowered and ("ready" in lowered or "available" in lowered)
+        self.brain_badge.setText("Local conversation" if ready else "AI needs attention" if failed else "Preparing local AI")
+        self.brain_progress.setVisible(not ready and not failed and percent < 100)
+        self.brain_download_label.setText(message)
+        self.brain_download_label.setVisible(not ready)
+        if percent >= 0:
+            self.brain_progress.setRange(0, 100)
+            self.brain_progress.setValue(min(100, percent))
+        else:
+            self.brain_progress.setRange(0, 0)
+        if ready:
+            self.settings_status.setText("Local conversation is ready. Talk naturally or ask JARVIS to do something.")
 
     def level_changed(self, value):
         self.reactor.amplitude = max(self.reactor.amplitude, value)
+        self.last_mic_level = float(value)
+        self.mic_meter.feed(value, "clip" in self.input_warning.lower())
+        self.mic_level_label.setText(f"{min(100, max(0, value * 100)):.0f}%")
+
+    def stop_reply(self):
+        if hasattr(self.speaker, "interrupt"):
+            self.speaker.interrupt()
+        self.speaking = False
+        self.preparing = False
+        self.refresh_mode()
 
     def listen(self):
+        self.listen_request += 1
+        request = self.listen_request
+        was_speaking = (self.speaking or self.preparing or self.listening_transition
+                        or self.speaker.active.is_set()
+                        or time.monotonic() < getattr(self.speaker, "echo_until", 0))
+        if was_speaking:
+            self.listening_transition = True
+            self.stop_reply()
+            # Let playback and its room echo settle before asking the user to
+            # speak. The listener discards that brief interval deliberately.
+            QTimer.singleShot(300, lambda: self.begin_listening(request))
+        else:
+            self.begin_listening(request)
+
+    def begin_listening(self, request):
+        if self.quitting or request != self.listen_request:
+            return
+        self.listening_transition = False
         if not self.listener.ready:
+            self.refresh_mode()
             self.add_message("SYSTEM", "Voice isn't ready yet. Check the microphone status and Settings; typed commands remain available.")
             return
         self.wake("manual")
@@ -634,8 +922,8 @@ class Window(QMainWindow):
                 foreground.argtypes = [ctypes.c_void_p]
                 foreground.restype = ctypes.c_int
                 foreground(int(self.winId()))
-        self.state_label.setText("●  ONLINE")
-        self.set_mode("LISTENING")
+        self.voice_state = "Listening"
+        self.refresh_mode()
         if source == "clap" or (source == "voice" and bring_forward):
             greeting = "Good morning, boss." if source == "clap" else "At your service, boss."
             self.add_message("JARVIS", greeting)
@@ -644,6 +932,9 @@ class Window(QMainWindow):
                 self.assistant.autoplay()
 
     def sleep(self):
+        self.listen_request += 1
+        self.listening_transition = False
+        self.stop_reply()
         self.asleep = True
         self.listener.set_sleep(True)
         self.state_label.setText("◌  SLEEP MODE")
@@ -658,8 +949,12 @@ class Window(QMainWindow):
         now = datetime.datetime.now()
         self.clock_label.setText(now.strftime("%H:%M:%S"))
         self.date_label.setText(now.strftime("%A, %d %B %Y"))
-        self.stat_labels["CPU"].setText(f"{psutil.cpu_percent():.0f}%")
-        self.stat_labels["MEMORY"].setText(f"{psutil.virtual_memory().percent:.0f}%")
+        cpu = psutil.cpu_percent()
+        memory = psutil.virtual_memory().percent
+        self.stat_labels["CPU"].setText(f"{cpu:.0f}%")
+        self.stat_labels["MEMORY"].setText(f"{memory:.0f}%")
+        self.stat_charts["CPU"].add_value(cpu)
+        self.stat_charts["MEMORY"].add_value(memory)
 
     def poll_gpu(self):
         if self.gpu_busy:
@@ -674,10 +969,17 @@ class Window(QMainWindow):
         self.gpu_busy = False
         self.gpu_value = value
         self.stat_labels["GPU"].setText("N/A" if value is None else f"{value:.0f}%")
+        self.stat_charts["GPU"].add_value(value)
         self.stat_labels["GPU"].setToolTip(name)
 
     def quit(self):
         self.quitting = True
+        self.listen_request += 1
+        self.listening_transition = False
+        if hasattr(self, "model_installer"):
+            self.model_installer.cancel()
+        if hasattr(self, "transcription_installer"):
+            self.transcription_installer.cancel()
         self.listener.stop()
         self.assistant.stop()
         self.speaker.stop()
@@ -693,6 +995,13 @@ class Window(QMainWindow):
             event.ignore()
 
     def cleanup(self):
+        self.quitting = True
+        self.listen_request += 1
+        self.listening_transition = False
+        if hasattr(self, "model_installer"):
+            self.model_installer.cancel()
+        if hasattr(self, "transcription_installer"):
+            self.transcription_installer.cancel()
         self.listener.stop()
         self.assistant.stop()
         self.speaker.stop()

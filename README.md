@@ -1,179 +1,157 @@
 # JARVIS for Windows
 
-## Download the desktop app
+**[Download JARVIS 1.2 for Windows 10/11](https://github.com/xavierpring1-svg/SAY-CHEESE-PIZZA/raw/refs/heads/main/downloads/JARVIS-Windows.zip?v=1.2.0)**
 
-**[Download JARVIS 1.1 for Windows 10/11](https://github.com/xavierpring1-svg/SAY-CHEESE-PIZZA/raw/refs/heads/main/downloads/JARVIS-Windows.zip?v=1.1.0)**
+Extract the whole ZIP and open **JARVIS.exe**. Run **Create Desktop Shortcut.cmd**
+to put it on your desktop. No Python installation or AI API key is needed.
+Use this download link, rather than GitHub's source-code Download ZIP button.
 
-Extract the whole ZIP, open **JARVIS.exe**, then run **Create Desktop Shortcut.cmd**.
-Do not use GitHub's green **Code → Download ZIP** button for the desktop app; use the
-link above, which includes the bundled Windows runtime.
+**Upgrading:** choose **Quit JARVIS** in the old app first. Extract 1.2 into a new
+folder and recreate your shortcut. Your saved tasks and settings stay in AppData.
 
-Already have JARVIS? Choose **Quit JARVIS**, extract this version into a new folder,
-and recreate the desktop shortcut. Your saved tasks and settings remain in AppData.
+## What's changed
 
-New in 1.1: **play Hello by Adele**, **search Chrome for weather**, and
-**type in the search bar pizza near me**, then **search that**. The default
-speech voice is now a natural British male voice.
+- A redesigned dashboard with an animated cyan reactor, real microphone waveform,
+  utilisation charts, readable conversation history, and editable recognized words.
+- British male neural speech, clearer spoken prose, interruption, and a Windows
+  audio-start fix. Recognition stays available while a reply is being prepared.
+- Separate wake detection and offline Whisper transcription, bounded silence
+  detection, input gain, microphone selection, sample-rate conversion, and audio warnings.
+- Inline commands aren't interrupted by a wake greeting. An existing user utterance
+  finishes before a queued greeting or reply starts speaking.
+- Natural command wording, spoken numbers, greetings by name, and follow-up prompts.
+- Built-in local conversation AI, with automatic first-use setup and visible progress.
 
-[Download page](https://xavierpring1-svg.github.io/SAY-CHEESE-PIZZA/)
-· [SHA256 checksum](downloads/JARVIS-Windows.sha256)
-· [Validation details](VALIDATION.md)
+## First launch
 
+Windows 10/11, **64-bit Intel/AMD**, with a microphone and speakers/headset.
 
-A personal desktop assistant with a cyan reactor dashboard, offline speech recognition,
-double-clap activation, speech replies, persistent tasks, application launching, Spotify
-desktop controls, and live time, date, CPU, memory, and GPU telemetry.
+1. Extract **the entire ZIP**, then double-click **JARVIS.exe**.
+2. Let voice setup finish. It downloads the official Vosk wake model (40 MB) and
+   Whisper English transcription model (118 MB). Microphone audio remains on your PC.
+3. Built-in conversation separately downloads a 19 MB CPU runtime and the official
+   Qwen conversation model (about 1.1 GB). Allow roughly **3 GB of free disk space**
+   and **2 GB of available memory**. Download speed and CPU affect setup/reply time.
+   Core typed commands work while setup runs; natural conversation starts when the
+   dashboard says it is ready. If setup fails, use **Settings → Enable natural conversation**
+   to retry. You can choose **Local commands** to use desktop commands without AI.
+4. Allow desktop microphone access in Windows Settings. Open Spotify, sign in,
+   and play a track once so its Windows media session becomes available.
+5. Run **Create Desktop Shortcut.cmd** and keep the extracted folder in place.
 
-## Start in three steps
+## Talk to JARVIS
 
-1. Extract **the entire JARVIS-Windows.zip** into a permanent folder on your PC.
-2. Open **JARVIS.exe**. At first launch it downloads the official Vosk English model
-   (about 40 MB). Allow desktop apps to use the microphone in Windows privacy settings.
-3. Run **Create Desktop Shortcut.cmd** to put JARVIS on your desktop. Keep the folder
-   in place because the shortcut points to it. No Python installation is needed.
+Say **Hey Jarvis**, then your request in one sentence. Or click **Listen** and speak
+when the app says **Listening**. Clap twice, roughly 0.2–0.8 seconds apart, to show
+JARVIS, hear **Good morning, boss**, and request Spotify playback.
 
-Windows 10/11, 64-bit Intel/AMD. This release was assembled and its UI/logic tested
-in a Linux cloud machine. Windows-specific hardware and Spotify integration still
-require testing on your PC. The launcher is unsigned. If startup fails, run
-**Debug JARVIS.cmd** to see the error instead of a hidden window.
+| Say or type | What happens |
+| --- | --- |
+| Hey Jarvis, say hello to Sarah | Says a greeting using Sarah's name |
+| Can you say good morning, everyone | Speaks the requested words |
+| Could you open Chrome | Opens a discovered app |
+| Play Hello by Adele | Selects a matching Spotify song and verifies playback |
+| Pause music / next song / previous track | Controls Spotify's media session |
+| Set the volume to forty percent | Sets system volume to 40% |
+| Add task buy a birthday cake | Saves a task in the UI |
+| Add a task | Asks for the task text, then accepts your follow-up |
+| Complete the first task | Completes task 1 |
+| Search Chrome for weather tomorrow | Types and submits a Chrome search |
+| Type in the search bar pizza near me | Writes literal text in Chrome's address bar |
+| Search that | Searches the unchanged pending Chrome text |
+| What time is it / system status | Speaks local time or available utilisation |
+| Go to sleep | Hides to the system tray and keeps wake detection armed |
 
-## Wake, sleep, and voice
+With conversation ready, you can also ask open-ended questions and discuss ideas.
+The local model can request the implemented desktop actions; it can still make mistakes.
+JARVIS cannot perform every possible PC action or reproduce all fictional movie abilities.
 
-- Say **Hey Jarvis**, then a command. Or clap twice, roughly 0.2–0.8 seconds apart.
-- A double clap brings up the window and says **Good morning, boss.**
-- Wake activation opens Spotify and requests playback if enabled in Settings.
-- Click **Sleep mode** or say **go to sleep**. The app stays in the Windows system tray
-  with its microphone listener running. Say the wake phrase or clap twice to bring it back.
-- Double-click the tray icon to recover manually. Closing the window enters sleep;
-  **Quit JARVIS** exits and stops listening.
-- After a wake phrase or the Listen button, the conversation window remains open for
-  25 seconds after your last command or speech reply. Say Hey Jarvis again to resume.
-- Typed commands work even without a microphone or voice model.
-- Use a headset to keep music from reaching the microphone. Adjust clap sensitivity in
-  Settings for your microphone and room; false detections are possible in loud environments.
-- The offline model is US English; accent and microphone quality affect transcription.
+Follow-up listening stays open for 45 seconds after a command or reply. Speak after
+JARVIS finishes, or press **Listen / Stop reply** to interrupt. The app briefly waits
+for its audio to settle before opening the microphone. Closing the window enters sleep;
+**Quit JARVIS** stops listening and closes its local AI server.
 
-Speech defaults to **Ryan, British English**, using Microsoft's online neural speech
-service through edge-tts. This needs internet and sends the text of spoken replies to
-Microsoft; microphone recognition remains offline. Temporary response audio is deleted
-after playback. If the service is unavailable, JARVIS reports the problem and uses
-installed Windows speech.
+## If the words are wrong
+
+Watch the live microphone meter and **Heard** text. Use **Edit words** to correct and
+send what you meant. Low-confidence basic recognition asks you to repeat instead of
+executing an uncertain command.
+
+- In Settings, select your actual headset/microphone, then restart. Avoid Stereo Mix
+  or speaker-loopback devices. The app avoids those when choosing a default.
+- If the meter barely moves, increase **Microphone gain** gradually. If you see a clipping
+  warning, lower gain or move farther from the microphone.
+- Use a headset while Spotify plays. Music and room noise can cause transcription
+  errors or false clap/wake detections. Tune clap threshold for your room.
+- Keep **Enhanced offline transcription (Whisper)** enabled. If its download fails,
+  basic Vosk recognition remains available; restart to retry enhanced setup.
+- Compact Vosk is the default for fast wake detection. The 128 MB Vosk model is an
+  optional alternative; a larger model doesn't guarantee better results for every voice.
+- Names, accents, quiet speech, and songs can still be misheard. This release was
+  tested with recorded speech clips, not your microphone; local testing is necessary.
+
+## Speech and privacy
+
+The default voice is **Ryan, British English**. Microsoft's online speech service
+receives the **text of spoken replies**, and needs internet. Temporary response audio
+is deleted afterward. It isn't an exact copy of the film actor's voice.
 
 Choose **Settings → Speech output → Windows voice · offline** to keep speech offline.
-Install English (United Kingdom) speech through **Windows voice settings**, restart,
-then choose an installed British voice. Windows voices depend on what is installed.
-The voice does not reproduce the actor's exact film voice. Replies pause recognition
-to avoid hearing JARVIS's own speech, so speak after the reply finishes.
+Install English (United Kingdom) speech through **Windows voice settings** if you want
+an installed British fallback voice. Speech speed and volume are adjustable.
 
-## Spotify and SpotX
+After model setup, recognition and built-in conversation run locally. The conversation
+server binds only to `127.0.0.1`, uses a random session token, and exits on Quit.
+Downloads use official HTTPS sources; the CPU runtime and conversation model verify
+publisher-provided hashes. Vosk/Whisper archives also check integrity, size, and safe paths;
+where no publisher checksum exists, their saved hashes are identified as locally observed.
 
-Open Spotify, sign in, and play a track once so it exposes a Windows media session.
-JARVIS then targets the Spotify session for play, pause, previous, and next, rather
-than sending global play/pause keys to every player. A Premium playback API is not used.
-SpotX is a modified client; its compatibility with Windows media sessions must be
-checked locally. JARVIS does not modify Spotify or bypass account restrictions.
+Optional **Ollama (local)** uses your separately installed model. Optional **OpenAI**
+needs your API key and incurs provider charges; it receives text requests, history,
+and action results. The key stays in memory and is never saved to settings or logs.
 
-Examples: **play Spotify**, **pause music**, **next song**, **previous track**,
-**volume 40**, **mute**, **unmute**. Optional wake playlist/track URI in Settings:
-`spotify:playlist:YOUR_PLAYLIST_ID`.
+## Spotify, Chrome, and applications
 
-Say **Hey Jarvis, play Hello by Adele** or type **play "Bohemian Rhapsody"**.
-JARVIS opens Spotify's search, selects a matching accessible **song** Play control,
-and reports success after the Windows media session confirms that song is playing.
-Including the artist helps distinguish tracks. **search Spotify for Queen** only
-opens search results.
+A Premium Web API is not used. Named-song playback uses the Spotify desktop client's
+English accessibility controls and confirms the selected song is playing through Windows
+media metadata. SpotX layout changes, adverts, missing metadata, and account restrictions
+can prevent playback. JARVIS reports failure when it cannot verify playback.
+**Search Spotify for Queen** only opens results.
 
-Automatic song selection depends on the installed client's English accessibility
-labels and layout. SpotX changes, adverts, unavailable songs, or missing media metadata
-can prevent it. In that case JARVIS tells you to select the track manually; it does
-not claim playback succeeded. The Spotify desktop app must be installed and signed in.
+Chrome dictation identifies the browser's actual address bar and enters punctuation
+literally. **Search that** requires the same bar to remain focused and unchanged.
+Searches use Chrome's configured search engine. It stops if another window or a web form
+gets focus. Install desktop Google Chrome to use these commands.
 
-## Desktop commands and tasks
+Applications are discovered from Start Menu shortcuts, Windows registrations, and Store
+app IDs. Add portable apps through **Applications → Register an app shortcut**.
+Ambiguous names need a more specific app name. Administrative apps may show Windows'
+normal elevation prompt.
 
-| Say or type | Result |
-| --- | --- |
-| Hey Jarvis, open Chrome | Launch a discovered application |
-| open calculator | Open Calculator |
-| add task buy groceries | Save a task and display it in My tasks |
-| show my tasks | Read the saved list |
-| complete task 1 | Complete task number 1 |
-| remove task 2 | Remove task number 2 |
-| what time is it | Speak local time and date |
-| system status | Speak available utilisation statistics |
-| search the web for pizza recipes | Open a browser search |
-| play Hello by Adele | Select a matching Spotify song and verify playback |
-| search Chrome for weather tomorrow | Type and submit a search in Google Chrome |
-| type in the search bar pizza near me | Write text in Chrome's address/search bar |
-| search that | Submit the unchanged pending Chrome text as a search |
-| go to sleep | Hide to the tray and keep wake detection armed |
+Tasks, settings, and models live in `%LOCALAPPDATA%\JarvisDesktop`. GPU metrics use
+NVIDIA's driver utility or Windows engine counters; unsupported drivers show **N/A**.
 
-Applications are discovered from Start Menu shortcuts, Windows app registrations, and
-Store app IDs. Unregistered portable apps can be added in **Applications → Register an
-app shortcut**. Ambiguous names need a more specific app name. Windows may require its
-normal elevation prompt for administrative apps.
+## Troubleshooting and source
 
-Chrome commands open or focus Google Chrome and identify its address/search bar.
-Dictated text is entered literally, including punctuation. **search that** works only
-while the original bar still has focus and its text remains unchanged. If another
-window or a page form takes focus, JARVIS stops and asks you to try again. Searches
-use Chrome's configured search engine. This feature needs desktop Google Chrome.
+- **Startup fails:** run **Debug JARVIS.cmd**. The native launcher is unsigned.
+- **No microphone:** Windows privacy settings must permit desktop microphone access.
+- **Voice setup:** allow HTTPS to `alphacephei.com`, `github.com`, `api.github.com`, and
+  `release-assets.githubusercontent.com`.
+- **Conversation setup:** allow `huggingface.co` and its model CDN hosts. Retry from
+  Settings after checking your connection, free disk space, and memory.
+- **No natural speech:** test the voice and allow `speech.platform.bing.com`, or select
+  offline Windows speech. A failed online request falls back without muting the mic
+  throughout synthesis, and uses a retry cooldown.
+- **Missing Microsoft runtime:** install Microsoft's x64 Visual C++ 2015–2022 Redistributable
+  from https://aka.ms/vs/17/release/vc_redist.x64.exe.
 
-Tasks and settings live in `%LOCALAPPDATA%\JarvisDesktop`. The microphone choice is
-applied after a restart. GPU metrics use NVIDIA's driver utility when present, or Windows
-GPU engine counters; unsupported drivers display **N/A**, rather than a fabricated value.
+See [VALIDATION.md](VALIDATION.md) for tests and unverified Windows behavior.
+The public download and SHA256 are in `downloads/`. Source is in `main.py` and `jarvis/`.
+`package-manifest.json` in the ZIP records verified dependency hashes and bundled source
+hashes. Develop with Python **3.12**: install `requirements-dev.txt`, then run `python main.py`.
+Run `python -m pytest -q`; Linux UI rendering uses `QT_QPA_PLATFORM=offscreen`.
 
-## Conversational AI
-
-Core commands work without an AI account. For open-ended conversation and natural
-language action requests, choose a provider in Settings:
-
-- **Ollama (local)**: click Install local conversational AI, or install Ollama from
-  https://ollama.com/download/windows and run `ollama pull llama3.2`. This downloads
-  about 2 GB and needs roughly 8 GB RAM. Choose **Ollama (local)**, model **llama3.2**,
-  local address **http://127.0.0.1:11434**, and Save. Some models have limited tool support.
-- **OpenAI**: enter your own API key, choose a compatible chat model (default
-  `gpt-4.1-mini`), and Save. API usage is billed by the provider. The key stays in memory
-  and must be re-entered after restarting. It is never written to settings or logs.
-  Text requests, conversation history, and action results are sent to the provider.
-
-The AI can call the implemented app, task, search, media, volume, clock, and telemetry
-actions. It cannot perform every possible PC action or execute unrestricted shell
-commands. It reports errors when an operation cannot be completed.
-
-## Troubleshooting
-
-- **No microphone**: Windows Settings → Privacy & security → Microphone → enable
-  desktop-app access. Select the right microphone in JARVIS Settings and restart.
-- **Model download fails**: allow HTTPS to `alphacephei.com`, then use Retry voice setup.
-  Model files remain local after download, so recognition works offline afterward.
-- **Spotify opened but did not play**: play one track manually, then issue play Spotify.
-  Make sure its media session is available and its current account permits playback.
-- **No speech**: check Speech volume and Test voice. For natural British speech, allow
-  internet access to `speech.platform.bing.com`; otherwise choose Windows voice · offline.
-- **Named song not selected**: include its artist, bring Spotify forward, and check
-  that its song Play buttons are accessible. Unsupported layouts require manual selection.
-- **Chrome typing stops**: keep Chrome in front, use a normal browser window, and retry.
-- **AI connection fails**: check the chosen model, API access, or that Ollama is running.
-- **Missing VC++ runtime**: install Microsoft's x64 Visual C++ 2015–2022 Redistributable
-  from https://aka.ms/vs/17/release/vc_redist.x64.exe and restart the app.
-
-## Validation and source
-
-The accompanying source is in `main.py` and `jarvis/`. The release bundles official
-Python 3.12.10 from the Python Software Foundation NuGet package and Windows wheels
-from PyPI. `package-manifest.json` records package versions and verified upstream hashes.
-The first-run model download retains TLS verification and checks ZIP integrity and paths.
-
-Development: install Python 3.12, run `python -m pip install -r requirements.txt`, then
-`python main.py`. Tests: install pytest, run `python -m pytest -q`. Linux UI smoke:
-`QT_QPA_PLATFORM=offscreen python main.py --demo --screenshot dashboard.png`.
-
-This is an independent fan-inspired assistant, not an official Marvel product.
-Bundled Python, Qt/PySide, Vosk, and other dependencies retain their upstream licenses
-in the runtime and package metadata. The Vosk small English model is Apache 2.0.
-
-## Repository replacement
-
-The previous pizza project is preserved in `pizza-backup-20261009`. Its previous
-GitHub Pages deployment is preserved in `pizza-pages-backup-20261009`.
-The repository name is retained so existing links continue to resolve.
+Independent fan-inspired project. Dependency licenses are retained in runtime metadata;
+llama.cpp is MIT, Qwen is Apache 2.0, and Whisper/sherpa-onnx retain their upstream licenses.
+The previous pizza project remains in `pizza-backup-20261009`, with its old Pages source
+in `pizza-pages-backup-20261009`.

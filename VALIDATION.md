@@ -1,43 +1,71 @@
-# Validation report
+# Validation report — JARVIS 1.2
 
-Tested on 9 October 2026 in the cloud's Linux environment, using Python 3.12.14,
-PySide6 6.9.3, pytest 8.4.2, and Qt's offscreen platform.
+Validated on 9 October 2026 in Linux with Python 3.12, PySide 6.9.3,
+pytest 8.4.2, Qt offscreen rendering, Vosk 0.3.45 and sherpa-onnx 1.13.8.
 
-127 tests passed for version 1.1.0. They exercise command parsing; durable task creation, completion,
-and deletion; preservation of damaged settings; double-clap timing, echo rejection,
-sustained-tone rejection, and cooldown; sleep/wake and speech-feedback gating;
-UI task/settings integration; double-clap greeting and requested Spotify startup;
-threaded command delivery to the GUI; AI tool-call routing; and safe model extraction.
+All 355 automated tests passed.
 
-New checks cover quoted song-name routing, Spotify UI song/artist matching and stale
-result rejection, Windows media metadata and PLAYING confirmation, optional metadata,
-timeouts and cancellation, literal Unicode Chrome dictation and search submission,
-UIA browser ancestry and foreground checks, delayed native input processing, changed
-pending text refusal, COM reference cleanup, and repeated wake phrases preserving
-Chrome focus. Speech tests cover British Ryan voice selection, cancellable synthesis
-and MCI playback, Windows fallback, temporary audio cleanup, and online retry cooldown.
-Windows adapters and service requests in these checks use mocks; they do not run
-against the user's Chrome or SpotX installation.
+The automated suite covers natural command parsing, literal names/task/search/song
+text, spoken numbers, persistent tasks/settings upgrades, clap timing, speech/wake
+feedback gating, Windows media/control adapters, Chrome focus and input handling,
+UI state delivery, reply interruption, and guarded model/archive extraction.
 
-Spotify session tests use a fake Windows media session, including a playback refusal.
-The Windows session API, COM initialisation, and volume API signatures were checked
-against the exact bundled packages. These checks do not validate live Spotify playback.
-No API key was supplied; conversational routing was tested with a simulated provider.
+New speech checks cover Windows playback startup/position/completion, SAPI WAV output,
+neural timeouts/fallback, readable spoken prose, microphone availability during
+synthesis, and greetings waiting for an existing user utterance. Listening checks
+cover 16 kHz conversion from 8/16/44.1/48 kHz, bounded silence segmentation, gain limits,
+microphone selection, low-confidence repetition, inline wake commands, and greetings
+by name. A microphone failure/retry check verifies fresh decoder queues, successful
+command recognition after reconnecting, and cancellation of stale decoding work.
+Conversation checks cover official runtime/model metadata and checksum
+validation, resume/cancellation, local-only server/token lifecycle, and simulated
+OpenAI-compatible action routing. External services in unit tests are mocked.
 
-The real Qt dashboard was rendered and visually inspected. The native launcher is a
-Windows x64 GUI PE executable with standard Windows DLL imports. The release includes
-the CPython runtime, Qt Windows platform plugin, PortAudio, Vosk, and WinRT projections.
-Runtime and published wheel checksums were verified against NuGet/PyPI metadata.
-The updated download page was checked at desktop and mobile widths. The portable
-builder now trims Qt using PE dependency closure, checks ZIP integrity and the GitHub
-size limit, and records hashes of bundled source files alongside dependency hashes.
+## Recorded-audio verification
 
-Not exercised here: Windows launch on a physical PC; microphone recording; recognition
-of real spoken audio; live clap sensitivity; online British voice service availability;
-Windows MCI/SAPI speech output; Chrome UI Automation; SpotX playback;
-real GPU counters; or live Ollama/OpenAI requests. The official voice-model host is
-blocked in this cloud runtime, so the Windows app downloads the model at first launch.
-The required cloud network domain has been saved for user review, but is not applied.
+Actual Vosk and Whisper engines were run against known recorded/synthesized WAVs.
+Three FFmpeg Flite voices supplied 21 synthetic wake/command utterances. Compact Vosk
+matched 10/21 full transcripts; 128 MB Vosk matched 9/21; Whisper Tiny matched 10/21,
+with specific Chrome/song-name improvements. Bigger Whisper Base performed worse
+on this set, so it is not the default. These clips do not prove universal microphone
+accuracy or human accent performance.
 
-Run Debug JARVIS.cmd if the Windows launch fails. Follow README.md to connect Spotify,
-check the microphone, test British speech, and enable optional conversation.
+The dedicated wake recognizer plus final utterance processing detected all 3 tested
+standalone “Hey Jarvis” voices. The actual Whisper/Listener pipeline rejected all 6
+“Hey Charles”/“Hey Travis” negatives. Constrained wake grammar alone produced those
+false positives, so unrestricted transcription corroboration matters. Similar names
+and background audio may still trigger mistakes.
+
+Eight actual timing checks across 16/48 kHz, leading silence, and repeated utterances
+passed after preserving Vosk's absolute sample timeline across resets. Recognition
+was also run against Vosk's official recorded test WAV. No microphone audio is saved
+by the app; test WAVs/results remain in the cloud's external validation cache.
+
+## Packaging and UI
+
+The redesigned Qt dashboard was rendered and visually inspected at 1280×850 and
+1020×740. Settings and listening/preparing/speaking/setup states were checked.
+The download page was checked at desktop and mobile widths.
+
+The portable Windows package includes official CPython 3.12.10, verified PyPI wheels,
+a native x64 launcher, Qt's Windows platform plugin, audio libraries, Vosk, Sherpa,
+and WinRT projections. The builder checks official NuGet SHA512 and PyPI SHA256,
+trims unused Qt/development files while retaining required DLLs/licenses, verifies ZIP
+integrity and GitHub's 100 MiB limit, and records bundled source hashes.
+
+Windows Sherpa binary imports and its exact Whisper API were checked. The official
+llama.cpp CPU runtime archive was downloaded and checked against GitHub's published
+SHA256; its server DLL closure and required Microsoft DLLs were verified. MIT/OpenMP
+licenses are retained. The app downloads this runtime separately on first use.
+
+## Still requires Windows testing
+
+Not exercised on a physical PC: actual Windows launch, microphone input and room-noise
+sensitivity, Windows MCI/SAPI audio playback, Chrome accessibility, SpotX playback,
+GPU counters, and optional live AI providers. The Microsoft online speech service was
+unreachable from this cloud. Hugging Face is blocked here, so the full Qwen model
+was not downloaded and its real conversation/tool quality has not been tested.
+The local conversation HTTP schema and lifecycle were tested with simulated responses.
+
+Use Debug JARVIS.cmd if startup fails, and follow README.md
+for microphone selection, model setup, speech fallback, and supported commands.

@@ -21,6 +21,85 @@ QT_PLUGINS = (
 )
 
 
+def _dll_dependencies(path, objdump):
+    inspection = subprocess.run([str(objdump), "-p", str(path)], check=True,
+                                capture_output=True, text=True)
+    return re.findall(r"DLL Name:\s*(\S+)", inspection.stdout)
+
+
+def _is_license(path):
+    legal = ("license", "licence", "copying", "copyright", "notice")
+    return any(any(term in part.lower() for term in legal) for part in path.parts)
+
+
+def trim_python_runtime(runtime, objdump, omit_installers=True):
+    """Omit development-only Python files while keeping app libraries and licenses.
+
+    All app dependencies are already bundled, and models are checksum-verified
+    archive downloads. The portable app therefore does not need pip/ensurepip.
+    Development from source uses a separate, full Python installation.
+    """
+    runtime = Path(runtime)
+    roots = [runtime / name for name in (
+        "include", "libs", "Lib/test", "Lib/idlelib", "Lib/tkinter", "tcl",
+    )]
+    if omit_installers:
+        roots += [runtime / "Lib/ensurepip", runtime / "Lib/site-packages/pip"]
+        roots += [runtime / "Scripts" / name for name in ("pip.exe", "pip3.exe", "pip3.12.exe")]
+    candidates = set()
+    for root in roots:
+        if root.is_dir():
+            candidates.update(path for path in root.rglob("*") if path.is_file())
+        elif root.is_file():
+            candidates.add(root)
+    tk_binaries = {
+        path for path in runtime.rglob("*")
+        if path.is_file() and re.fullmatch(r"(?:_tkinter.*\.pyd|(?:tcl|tk)\d.*\.dll)", path.name, re.I)
+    }
+    candidates.update(tk_binaries)
+    protected = set()
+    # Protect DLLs still imported by any retained extension/launcher. If a Tk
+    # library is required, keep all Tk support data as well as its binary closure.
+    candidate_dlls = {path.name.casefold(): path for path in tk_binaries}
+    if candidate_dlls:
+        pending = [path for path in runtime.rglob("*")
+                   if path.is_file() and path.suffix.lower() in {".dll", ".pyd", ".exe"}
+                   and path not in candidates]
+        while pending:
+            path = pending.pop()
+            for dependency in _dll_dependencies(path, objdump):
+                resolved = candidate_dlls.get(dependency.casefold())
+                if resolved is not None and resolved not in protected:
+                    protected.add(resolved)
+                    pending.append(resolved)
+        if protected:
+            tk_roots = [runtime / name for name in ("Lib/tkinter", "tcl")]
+            protected.update(path for path in candidates
+                             if path in tk_binaries or any(path.is_relative_to(root) for root in tk_roots))
+    retained_licenses = [path for path in candidates if _is_license(path.relative_to(runtime))]
+    protected.update(retained_licenses)
+    removed = []
+    removed_bytes = 0
+    for path in sorted(candidates - protected):
+        removed.append(path.relative_to(runtime).as_posix())
+        removed_bytes += path.stat().st_size
+        path.unlink()
+    for root in roots:
+        if root.is_dir():
+            for directory in sorted(root.rglob("*"), reverse=True):
+                if directory.is_dir() and not any(directory.iterdir()):
+                    directory.rmdir()
+            if not any(root.iterdir()):
+                root.rmdir()
+    return {
+        "reason": "Portable runtime omits development headers, import libraries, Tk tools, and installers; app dependencies are bundled",
+        "installers_omitted": omit_installers,
+        "removed_files": removed, "removed_bytes": removed_bytes,
+        "retained_license_files": sorted(path.relative_to(runtime).as_posix() for path in retained_licenses),
+        "protected_imported_files": sorted(path.relative_to(runtime).as_posix() for path in protected if path not in retained_licenses),
+    }
+
+
 def trim_qt(site, objdump):
     """Keep app bindings, dynamic Qt plugins and their imported DLL closure.
 
@@ -41,9 +120,7 @@ def trim_qt(site, objdump):
     imported = {}
     while pending:
         path = pending.pop()
-        inspection = subprocess.run([str(objdump), "-p", str(path)], check=True,
-                                    capture_output=True, text=True)
-        dependencies = re.findall(r"DLL Name:\s*(\S+)", inspection.stdout)
+        dependencies = _dll_dependencies(path, objdump)
         imported[str(path.relative_to(qt))] = sorted(dependencies, key=str.casefold)
         for dependency in dependencies:
             resolved = dlls.get(dependency.casefold())

@@ -14,7 +14,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-from package_download import create_download, file_sha256, trim_qt
+from package_download import create_download, file_sha256, trim_python_runtime, trim_qt
 
 ROOT = Path(__file__).resolve().parent
 RELEASE = ROOT / "dist/JARVIS-Windows"
@@ -165,13 +165,14 @@ def assemble(release, wheel_directory):
     if not compiler.is_file() or not objdump.is_file():
         raise RuntimeError("Windows launcher compiler/PE inspection tool unavailable")
     qt_trim = trim_qt(site, objdump)
-    for folder in ["jarvis", "tests", "docs"]:
+    python_trim = trim_python_runtime(runtime, objdump)
+    for folder in ["jarvis", "tests", "docs", "third_party"]:
         if (ROOT / folder).is_dir():
             shutil.copytree(ROOT / folder, release / folder,
                             ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
     source_files = [ROOT / name for name in [
         "main.py", "requirements.txt", "requirements-dev.txt", "README.md", "VALIDATION.md",
-        "launcher.c", "build_windows.py", "package_download.py", "jarvis.ico",
+        "launcher.c", "build_windows.py", "package_download.py", "prepare_brain_runtime.py", "jarvis.ico",
     ]]
     source_files += sorted(ROOT.glob("*.cmd")) + sorted(ROOT.glob("*.ps1"))
     for file in source_files:
@@ -187,7 +188,8 @@ def assemble(release, wheel_directory):
     (release / "package-manifest.json").write_text(json.dumps({
         "python": {"version": "3.12.10", "source": registration["packageContent"],
                    "sha512": expected, "checksum_source": registration["catalogEntry"]},
-        "packages": records, "qt_trim": qt_trim, "source_files_sha256": source_hashes,
+        "packages": records, "qt_trim": qt_trim, "python_trim": python_trim,
+        "source_files_sha256": source_hashes,
     }, indent=2))
 
 

@@ -8,7 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.british_speech import NEURAL_VOICE, SpeechCancelled, SpeechOutput, _MciPlayer, neural_options
+from jarvis.british_speech import (NEURAL_VOICE, SpeechCancelled, SpeechOutput, _MciPlayer,
+                                 neural_options, spoken_text)
 
 
 def test_default_neural_voice_is_male_british_and_uses_existing_controls():
@@ -112,9 +113,10 @@ def test_neural_download_has_bounded_timeouts_and_is_cancellable(monkeypatch, tm
         class Communicator:
             def __init__(self, text, **kwargs):
                 options.update(kwargs)
-            async def save(self, path):
+            async def stream(self):
                 entered.set()
                 await asyncio.Event().wait()
+                yield {"type": "audio", "data": b"never reached"}
         monkeypatch.setitem(sys.modules, "edge_tts", SimpleNamespace(Communicate=Communicator))
         output = SpeechOutput(lambda: True, lambda text: None)
         task = asyncio.create_task(output._synthesise("Hello", {}, tmp_path / "voice.mp3"))
@@ -126,21 +128,23 @@ def test_neural_download_has_bounded_timeouts_and_is_cancellable(monkeypatch, tm
         assert output.loop is None
     asyncio.run(scenario())
     assert options["voice"] == NEURAL_VOICE
-    assert options["connect_timeout"] == 10
-    assert options["receive_timeout"] == 20
+    assert options["connect_timeout"] == 5
+    assert options["receive_timeout"] == 8
 
 
 class FakeMci:
-    def __init__(self, mode="stopped", fail_on=""):
+    def __init__(self, mode="stopped", position=2500, fail_on=""):
         self.commands = []
         self.mode = mode
+        self.position = position
         self.fail_on = fail_on
     def mciSendStringW(self, command, answer, size, handle):
         self.commands.append(command)
         if self.fail_on and self.fail_on in command:
             return 1
         if answer is not None:
-            answer.value = "2500" if command.endswith(" length") else self.mode
+            answer.value = ("2500" if command.endswith(" length") else
+                            str(self.position) if command.endswith(" position") else self.mode)
         return 0
 
 
@@ -175,7 +179,7 @@ def test_neural_temporary_audio_is_deleted_after_playback_failure(monkeypatch):
     async def synthesise(text, options, path):
         files.append(path)
         path.write_bytes(b"mp3")
-    def fail_playback(self, path, running):
+    def fail_playback(self, path, running, playback=None):
         raise RuntimeError("output disconnected")
     monkeypatch.setattr(output, "_synthesise", synthesise)
     monkeypatch.setattr("jarvis.british_speech._MciPlayer.__init__", lambda self: None)
@@ -186,7 +190,7 @@ def test_neural_temporary_audio_is_deleted_after_playback_failure(monkeypatch):
     assert not files[0].parent.exists()
 
 
-def test_windows_fallback_prefers_british_male_and_reports_missing_voice(monkeypatch):
+def test_windows_fallback_prefers_british_male_and_reports_missing_voice(monkeypatch, tmp_path):
     scripts, reports = [], []
     class Process:
         returncode = 0
@@ -196,15 +200,157 @@ def test_windows_fallback_prefers_british_male_and_reports_missing_voice(monkeyp
             return b'{"culture":"en-US"}', None
     monkeypatch.setattr("jarvis.british_speech.subprocess.Popen", Process)
     output = SpeechOutput(lambda: True, reports.append)
-    output._windows_speak("Private text", {})
-    output._windows_speak("Again", {})
+    output._windows_synthesise("Private text", {}, tmp_path / "voice.wav")
+    output._windows_synthesise("Again", {}, tmp_path / "voice.wav")
     assert "-eq 'en-GB'" in scripts[0]
     assert "VoiceGender]::Male" in scripts[0]
+    assert "$s.SetOutputToWaveFile" in scripts[0]
     payload = re.search(r"FromBase64String\('([^']+)'\)", scripts[0]).group(1)
     assert json.loads(base64.b64decode(payload))["text"] == "Private text"
     assert "Private text" not in scripts[0]
     assert len(reports) == 1
     assert "No British Windows voice" in reports[0]
+
+
+def test_spoken_markdown_becomes_readable_prose_without_code_or_urls():
+    raw = ('## Ready\n**Task added**, boss. Visit [Spotify](https://spotify.com).\n'
+           '```python\nprint("do not read this code")\n```\n'
+           '- First item\n- _Second_ item\nhttps://example.com/long?token=secret')
+    result = spoken_text(raw)
+    assert "Ready." in result
+    assert "Task added, boss." in result
+    assert "Visit Spotify." in result
+    assert "I've put the code on screen." in result
+    assert "First item Second item" in result
+    assert all(part not in result for part in ("**", "```", "print", "https://", "token=", "_Second_"))
+
+
+def test_spoken_long_response_stops_at_sentence_and_points_to_full_text():
+    result = spoken_text("A complete sentence. " * 60, maximum=150)
+    assert len(result) <= 150
+    assert result.endswith(". The full answer is on screen.")
+    assert result.count("A complete sentence.") < 60
+
+
+def test_sanitizer_keeps_ui_text_intact_and_applies_to_both_engines(monkeypatch):
+    raw, spoken = "**Hello**, boss. Read https://example.com/very-long.", []
+    output = SpeechOutput(lambda: True, lambda text: None)
+    monkeypatch.setattr(output, "_neural_speak", lambda text, options: spoken.append(text))
+    monkeypatch.setattr(output, "_windows_speak", lambda text, options: spoken.append(text))
+    output.speak(raw, {})
+    output.speak(raw, {"speech_engine": "windows"})
+    assert spoken == [spoken_text(raw), spoken_text(raw)]
+    assert raw.startswith("**Hello**")
+
+
+class SequencedMci(FakeMci):
+    def __init__(self, states):
+        super().__init__()
+        self.states = states
+        self.index = 0
+    def mciSendStringW(self, command, answer, size, handle):
+        state = self.states[min(self.index, len(self.states) - 1)]
+        self.mode, self.position = state
+        result = super().mciSendStringW(command, answer, size, handle)
+        if command.endswith(" position"):
+            self.index += 1
+        return result
+
+
+def test_mci_does_not_discard_audio_during_initial_stopped_race(monkeypatch, tmp_path):
+    library = SequencedMci([("stopped", 0), ("stopped", 0), ("playing", 100),
+                            ("playing", 2300), ("stopped", 2500)])
+    clock, playback = [100.0], []
+    monkeypatch.setattr("jarvis.british_speech.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("jarvis.british_speech.time.sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    _MciPlayer(library).play(tmp_path / "response.mp3", lambda: True, playback.append)
+    assert library.index == 5
+    assert playback == [True, False]
+    assert library.commands[-1].startswith("close ")
+
+
+def test_mci_detects_audio_that_never_starts_and_releases_microphone(monkeypatch, tmp_path):
+    library = FakeMci(position=0)
+    clock, playback = [100.0], []
+    monkeypatch.setattr("jarvis.british_speech.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("jarvis.british_speech.time.sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    with pytest.raises(RuntimeError, match="did not start"):
+        _MciPlayer(library).play(tmp_path / "response.mp3", lambda: True, playback.append)
+    assert clock[0] >= 102
+    assert playback == [True, False]
+    assert library.commands[-1].startswith("close ")
+
+
+def test_mci_detects_premature_stop_instead_of_claiming_success(monkeypatch, tmp_path):
+    library = SequencedMci([("playing", 100), ("stopped", 200)])
+    clock = [100.0]
+    monkeypatch.setattr("jarvis.british_speech.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("jarvis.british_speech.time.sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    with pytest.raises(RuntimeError, match="before the response finished"):
+        _MciPlayer(library).play(tmp_path / "response.mp3", lambda: True)
+
+
+def test_offline_synthesis_does_not_mute_mic_before_wav_playback(monkeypatch):
+    playback, paths = [], []
+    output = SpeechOutput(lambda: True, lambda text: None, playback.append)
+    def synthesise(text, settings, path):
+        assert playback == []
+        path.write_bytes(b"wav")
+        paths.append(path)
+    def play(self, path, running, callback):
+        assert path.is_file()
+        assert path.suffix == ".wav"
+        callback(True)
+        callback(False)
+    monkeypatch.setattr(output, "_windows_synthesise", synthesise)
+    monkeypatch.setattr("jarvis.british_speech._MciPlayer.__init__", lambda self: None)
+    monkeypatch.setattr("jarvis.british_speech._MciPlayer.play", play)
+    output.speak("Hello, boss.", {"speech_engine": "windows"})
+    assert playback == [True, False]
+    assert not paths[0].exists()
+
+
+def test_no_first_audio_uses_fallback_promptly_without_muting_mic(monkeypatch):
+    playback, spoken, timeouts = [], [], []
+    class Communicator:
+        def __init__(self, text, **kwargs):
+            pass
+        async def stream(self):
+            await asyncio.Event().wait()
+            yield {"type": "audio", "data": b"unreachable"}
+    monkeypatch.setitem(sys.modules, "edge_tts", SimpleNamespace(Communicate=Communicator))
+    real_wait_for = asyncio.wait_for
+    async def wait_for(awaitable, timeout):
+        timeouts.append(timeout)
+        if timeout <= 8:
+            awaitable.close()
+            raise TimeoutError()
+        return await real_wait_for(awaitable, timeout)
+    monkeypatch.setattr("jarvis.british_speech.asyncio.wait_for", wait_for)
+    output = SpeechOutput(lambda: True, lambda text: None, playback.append)
+    monkeypatch.setattr(output, "_windows_speak", lambda text, settings: spoken.append(text))
+    output.speak("Hello, boss.", {})
+    assert spoken == ["Hello, boss."]
+    assert playback == []
+    assert timeouts[0] == 20
+    assert 0 < timeouts[1] <= 8
+
+
+def test_neural_stream_saves_audio_chunks_and_ignores_metadata(monkeypatch, tmp_path):
+    class Communicator:
+        def __init__(self, text, **kwargs):
+            pass
+        async def stream(self):
+            yield {"type": "WordBoundary", "text": "Hello"}
+            yield {"type": "audio", "data": b"first"}
+            yield {"type": "audio", "data": b"second"}
+    monkeypatch.setitem(sys.modules, "edge_tts", SimpleNamespace(Communicate=Communicator))
+    playback = []
+    output = SpeechOutput(lambda: True, lambda text: None, playback.append)
+    path = tmp_path / "speech.mp3"
+    asyncio.run(output._synthesise("Hello", {}, path))
+    assert path.read_bytes() == b"firstsecond"
+    assert not playback
 
 
 def test_windows_speech_process_is_terminated_when_stopped():

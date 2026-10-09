@@ -111,7 +111,7 @@ def test_wake_word_sleep_gating_and_followup(qt, tmp_path):
     listener._text("add task ignore this while sleeping")
     assert not commands
     listener._text("hey jarvis add task buy milk")
-    assert wakes == ["voice"]
+    assert wakes == ["voice_command"]
     assert commands == ["add task buy milk"]
     listener._text("open chrome")
     assert commands[-1] == "open chrome"
@@ -218,7 +218,8 @@ def test_conversation_tool_calls_use_supported_actions(qt, tmp_path, monkeypatch
     def respond(request, **kwargs):
         requests.append(json.loads(request.data))
         return io.BytesIO(json.dumps(next(responses)).encode())
-    monkeypatch.setattr("urllib.request.urlopen", respond)
+    from types import SimpleNamespace
+    monkeypatch.setattr("urllib.request.build_opener", lambda *args: SimpleNamespace(open=respond))
     assert assistant.converse("Remember to buy milk") == "I've added it, boss."
     assert Store(tmp_path).tasks[0]["text"] == "Buy milk"
     assert requests[-1]["messages"][-1]["role"] == "tool"

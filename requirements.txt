@@ -4,6 +4,7 @@ numpy==2.3.3
 sounddevice==0.5.3
 vosk==0.3.45
 edge-tts==7.2.8
+sherpa-onnx==1.13.8
 pywinauto==0.6.9; sys_platform == 'win32'
 pywin32==312; sys_platform == 'win32'
 winrt-Windows.Media.Control[all]==3.2.1; sys_platform == 'win32'

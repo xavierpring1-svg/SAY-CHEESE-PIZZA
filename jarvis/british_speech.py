@@ -9,7 +9,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import ctypes
+import html
 import json
+import re
 import subprocess
 import tempfile
 import threading
@@ -22,6 +24,8 @@ from .windows import NO_WINDOW
 
 NEURAL_VOICE = "en-GB-RyanNeural"
 NEURAL_RETRY_DELAY = 60
+NEURAL_FIRST_AUDIO_TIMEOUT = 8
+NEURAL_TOTAL_TIMEOUT = 20
 
 
 class SpeechCancelled(Exception):
@@ -33,6 +37,33 @@ def neural_options(settings):
     rate = max(-10, min(10, int(settings.get("speech_rate", -1)))) * 10
     volume = max(0, min(100, int(settings.get("speech_volume", 90)))) - 100
     return {"voice": NEURAL_VOICE, "rate": f"{rate:+d}%", "volume": f"{volume:+d}%"}
+
+
+def spoken_text(text, maximum=600):
+    """Keep full answers in the UI while speaking concise, readable prose."""
+    text = html.unescape(str(text))
+    text = re.sub(r"```[^\n]*\n.*?```|```.*?```", " I've put the code on screen. ", text, flags=re.S)
+    text = re.sub(r"!\[[^]]*\]\([^)]*\)", "", text)
+    text = re.sub(r"\[([^]]+)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"https?://[^\s<>]+|\bwww\.[^\s<>]+", "the link on screen", text, flags=re.I)
+    text = re.sub(r"(?m)^\s*#{1,6}\s+(.+?)\s*#*\s*$", r"\1. ", text)
+    text = re.sub(r"(?m)^\s*(?:[-*+•]|\d+[.)])\s+", "", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"(\*\*|__)(.+?)\1", r"\2", text)
+    text = re.sub(r"(?<!\w)[*_]([^*_\n]+)[*_](?!\w)", r"\1", text)
+    text = re.sub(r"[`~]", "", text)
+    text = re.sub(r"(?m)^\s*(?:---+|___+|===+)\s*$", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > maximum:
+        suffix = " The full answer is on screen."
+        preview = text[:maximum - len(suffix) - 1].rstrip()
+        sentences = list(re.finditer(r"[.!?](?:\s|$)", preview))
+        if sentences and sentences[-1].end() > len(preview) // 2:
+            preview = preview[:sentences[-1].end()].strip()
+        else:
+            preview = preview.rsplit(" ", 1)[0].rstrip(" ,;:") + "."
+        text = preview + suffix
+    return text
 
 
 class _MciPlayer:
@@ -53,25 +84,51 @@ class _MciPlayer:
             raise RuntimeError("Windows could not play the speech audio.")
         return buffer.value if buffer is not None else ""
 
-    def play(self, path, running):
+    def play(self, path, running, playback=None):
         alias = "jarvisspeech_" + uuid.uuid4().hex
         opened = False
+        announced = False
         try:
             if not running():
                 raise SpeechCancelled()
             # The path is created by TemporaryDirectory, never supplied by a command.
-            self._command(f'open "{path}" type mpegvideo alias {alias}')
+            kind = "waveaudio" if Path(path).suffix.lower() == ".wav" else "mpegvideo"
+            self._command(f'open "{path}" type {kind} alias {alias}')
             opened = True
             self._command(f"set {alias} time format milliseconds")
             length = int(self._command(f"status {alias} length", answer=True))
+            if length <= 0:
+                raise RuntimeError("The speech audio is empty or could not be decoded.")
+            if playback is not None:
+                playback(True)
+                announced = True
             self._command(f"play {alias} from 0")
-            deadline = time.monotonic() + min(180, max(5, length / 1000 + 5))
+            now = time.monotonic()
+            start_deadline = now + 2
+            deadline = now + min(180, max(5, length / 1000 + 5))
+            started = False
+            stopped_since = None
             while True:
                 if not running():
                     raise SpeechCancelled()
-                if self._command(f"status {alias} mode", answer=True) != "playing":
+                mode = self._command(f"status {alias} mode", answer=True)
+                position = int(self._command(f"status {alias} position", answer=True))
+                now = time.monotonic()
+                started = started or mode == "playing" or position > 0
+                # MCI can initially report stopped while asynchronous playback
+                # starts. Require either the end position or observed playback.
+                if mode == "stopped" and position >= max(1, length - 30):
                     return
-                if time.monotonic() > deadline:
+                if mode == "playing":
+                    stopped_since = None
+                elif started:
+                    if stopped_since is None:
+                        stopped_since = now
+                    elif now - stopped_since >= .25:
+                        raise RuntimeError("Speech playback stopped before the response finished.")
+                elif now >= start_deadline:
+                    raise RuntimeError("Windows did not start speech playback.")
+                if now > deadline:
                     raise RuntimeError("Speech playback timed out.")
                 time.sleep(0.05)
         finally:
@@ -81,12 +138,15 @@ class _MciPlayer:
                     self._command(f"close {alias}")
                 except RuntimeError:
                     pass
+            if announced:
+                playback(False)
 
 
 class SpeechOutput:
-    def __init__(self, running, report):
+    def __init__(self, running, report, playback=None):
         self.running = running
         self.report = report
+        self.playback = playback
         self.lock = threading.Lock()
         self.process = None
         self.loop = None
@@ -98,10 +158,13 @@ class SpeechOutput:
     def speak(self, text, settings):
         if not self.running():
             raise SpeechCancelled()
+        text = spoken_text(text)
+        if not text:
+            return
         if (settings.get("speech_engine", "neural") != "windows"
                 and time.monotonic() >= self.retry_online_after):
             try:
-                self._neural_speak(text[:5000], settings)
+                self._neural_speak(text, settings)
                 if self.online_failed:
                     self.report("The British neural voice is available again.")
                 self.online_failed = False
@@ -119,7 +182,7 @@ class SpeechOutput:
                 # An offline connection should delay only the first reply, not
                 # every utterance. Try the service again after a short cooldown.
                 self.retry_online_after = time.monotonic() + NEURAL_RETRY_DELAY
-        self._windows_speak(text[:5000], settings)
+        self._windows_speak(text, settings)
 
     def _neural_speak(self, text, settings):
         with tempfile.TemporaryDirectory(prefix="jarvis-speech-") as directory:
@@ -127,22 +190,46 @@ class SpeechOutput:
             asyncio.run(self._synthesise(text, settings, path))
             if not self.running():
                 raise SpeechCancelled()
-            _MciPlayer().play(path, self.running)
+            _MciPlayer().play(path, self.running, self.playback)
 
     async def _synthesise(self, text, settings, path):
         import edge_tts
 
         # edge-tts retains TLS certificate verification. No credentials are saved.
         communicator = edge_tts.Communicate(text, **neural_options(settings),
-                                           connect_timeout=10, receive_timeout=20)
-        task = asyncio.create_task(communicator.save(str(path)))
+                                           connect_timeout=5, receive_timeout=8)
+        async def download():
+            iterator = communicator.stream().__aiter__()
+            first_audio_deadline = asyncio.get_running_loop().time() + NEURAL_FIRST_AUDIO_TIMEOUT
+            has_audio = False
+            try:
+                with Path(path).open("wb") as audio:
+                    while True:
+                        remaining = first_audio_deadline - asyncio.get_running_loop().time()
+                        if not has_audio and remaining <= 0:
+                            raise TimeoutError("No speech audio arrived before the deadline.")
+                        timeout = 8 if has_audio else remaining
+                        try:
+                            chunk = await asyncio.wait_for(iterator.__anext__(), timeout=timeout)
+                        except StopAsyncIteration:
+                            break
+                        if chunk.get("type") == "audio" and chunk.get("data"):
+                            audio.write(chunk["data"])
+                            has_audio = True
+                if not has_audio:
+                    raise RuntimeError("The British voice service returned no speech audio.")
+            finally:
+                close = getattr(iterator, "aclose", None)
+                if close is not None:
+                    await close()
+        task = asyncio.create_task(download())
         with self.lock:
             if not self.running():
                 task.cancel()
             self.loop = asyncio.get_running_loop()
             self.task = task
         try:
-            await asyncio.wait_for(task, timeout=35)
+            await asyncio.wait_for(task, timeout=NEURAL_TOTAL_TIMEOUT)
         except asyncio.CancelledError:
             raise SpeechCancelled() from None
         finally:
@@ -151,8 +238,17 @@ class SpeechOutput:
                 self.task = None
 
     def _windows_speak(self, text, settings):
+        with tempfile.TemporaryDirectory(prefix="jarvis-speech-") as directory:
+            path = Path(directory) / "response.wav"
+            self._windows_synthesise(text, settings, path)
+            if not self.running():
+                raise SpeechCancelled()
+            _MciPlayer().play(path, self.running, self.playback)
+
+    def _windows_synthesise(self, text, settings, path):
         payload = base64.b64encode(json.dumps({
             "text": text, "voice": settings.get("voice", ""),
+            "output": str(path),
             "rate": max(-10, min(10, int(settings.get("speech_rate", -1)))),
             "volume": max(0, min(100, int(settings.get("speech_volume", 90)))),
         }).encode("utf-8")).decode("ascii")
@@ -164,7 +260,8 @@ class SpeechOutput:
         script += "$v=$s.GetInstalledVoices() | Where-Object {$_.Enabled -and $_.VoiceInfo.Culture.Name -eq 'en-GB'} "
         script += "| Sort-Object @{Expression={$_.VoiceInfo.Gender -ne [System.Speech.Synthesis.VoiceGender]::Male}} "
         script += "| Select-Object -First 1; if($v){$s.SelectVoice($v.VoiceInfo.Name)}}; "
-        script += "$s.Rate=[int]$p.rate; $s.Volume=[int]$p.volume; $s.Speak([string]$p.text); "
+        script += "$s.Rate=[int]$p.rate; $s.Volume=[int]$p.volume; "
+        script += "$s.SetOutputToWaveFile([string]$p.output); $s.Speak([string]$p.text); "
         script += "@{culture=$s.Voice.Culture.Name} | ConvertTo-Json -Compress } finally {$s.Dispose()}"
         with self.lock:
             if not self.running():
@@ -176,7 +273,7 @@ class SpeechOutput:
             process = self.process
         try:
             try:
-                output, _ = process.communicate(timeout=180)
+                output, _ = process.communicate(timeout=30)
             except subprocess.TimeoutExpired:
                 process.terminate()
                 try:
