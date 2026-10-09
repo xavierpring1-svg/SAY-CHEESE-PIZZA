@@ -1,5 +1,14 @@
 node_modules/
 dist/
+.venv
+.toolchain
+wheels
+.build-cache
+.demo-data/
+.test-data/
+__pycache__/
+*.pyc
+.pytest_cache/
 .env
 .env.*
 !.env.example
