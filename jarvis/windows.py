@@ -8,6 +8,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -16,6 +17,10 @@ from pathlib import Path
 
 IS_WINDOWS = platform.system() == "Windows"
 NO_WINDOW = 0x08000000 if IS_WINDOWS else 0
+if IS_WINDOWS:
+    # UI Automation, WinRT media sessions, and Core Audio share MTA workers.
+    # comtypes/pywinauto consult this flag at their first lazy import.
+    sys.coinit_flags = 0
 
 
 def powershell(script, timeout=20, input_text=None):
@@ -159,6 +164,10 @@ class Spotify:
         os.startfile("spotify:search:" + urllib.parse.quote(query))
         return f"I've opened Spotify results for {query}. Select the track or playlist you want."
 
+    def play(self, query, *, cancelled=None):
+        from .spotify_desktop import play_song
+        return play_song(query, cancelled=cancelled)
+
 
 def media_key(action):
     if not IS_WINDOWS:
@@ -166,7 +175,7 @@ def media_key(action):
     if action in {"mute", "unmute"}:
         import comtypes
         from pycaw.pycaw import AudioUtilities
-        comtypes.CoInitialize()
+        comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
         try:
             AudioUtilities.GetSpeakers().EndpointVolume.SetMute(1 if action == "mute" else 0, None)
         finally:
@@ -184,7 +193,7 @@ def set_volume(percent):
     import comtypes
     from pycaw.pycaw import AudioUtilities
     value = max(0, min(100, int(percent)))
-    comtypes.CoInitialize()
+    comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
     try:
         endpoint = AudioUtilities.GetSpeakers().EndpointVolume
         endpoint.SetMasterVolumeLevelScalar(value / 100, None)

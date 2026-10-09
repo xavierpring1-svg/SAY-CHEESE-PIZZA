@@ -20,10 +20,12 @@ from .windows import Apps, IS_WINDOWS, gpu_usage
 from .voice import Speaker, Listener, available_voices
 from .assistant import Assistant, HELP
 from .model import model_path, ModelInstaller
+from . import __version__
 
 STYLE = """
 * { font-family: 'Segoe UI'; font-size: 13px; color: #d7e8f2; }
 QMainWindow, QWidget#shell { background: #090f17; }
+QWidget#settingsPage { background: #090f17; }
 QWidget#sidebar { background: #0d1621; border-right: 1px solid #203142; }
 QLabel#brand { font-size: 25px; font-weight: 700; letter-spacing: 5px; color: #56ddeb; }
 QLabel#eyebrow { color: #65839b; font-size: 10px; letter-spacing: 2px; }
@@ -154,7 +156,7 @@ class Window(QMainWindow):
         self.gpu_busy = False
         self.telemetry = Telemetry()
         self.telemetry.gpu.connect(self.gpu_updated)
-        self.setWindowTitle("JARVIS · Desktop Assistant")
+        self.setWindowTitle(f"JARVIS {__version__} · Desktop Assistant")
         self.resize(1160, 790)
         self.setMinimumSize(950, 680)
         self.setWindowIcon(self.make_icon())
@@ -184,7 +186,7 @@ class Window(QMainWindow):
         sidebar.addStretch()
         self.state_label = label("●  ONLINE", "subtitle")
         sidebar.addWidget(self.state_label)
-        sidebar.addWidget(label("LOCAL VOICE · WINDOWS", "eyebrow"))
+        sidebar.addWidget(label(f"WINDOWS · v{__version__}", "eyebrow"))
         sidebar.addSpacing(15)
         sidebar.addWidget(button("☾  Sleep mode", self.sleep))
         sidebar.addWidget(button("Quit JARVIS", self.quit))
@@ -324,7 +326,7 @@ class Window(QMainWindow):
         layout.addWidget(self.chat, 1)
         entry = QHBoxLayout()
         self.command_entry = QLineEdit()
-        self.command_entry.setPlaceholderText("Type a command… e.g. add task plan tomorrow")
+        self.command_entry.setPlaceholderText('Try play "Hello by Adele" or search Chrome for weather')
         self.command_entry.returnPressed.connect(self.submit_entry)
         entry.addWidget(self.command_entry, 1)
         entry.addWidget(button("Send  ↗", self.submit_entry, True))
@@ -368,6 +370,7 @@ class Window(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         page = QWidget()
+        page.setObjectName("settingsPage")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 20, 10, 0)
         layout.addWidget(label("Make it yours.", "title"))
@@ -402,6 +405,12 @@ class Window(QMainWindow):
         microphone.setCurrentIndex(max(0, selected))
         self.settings_widgets["microphone"] = microphone
         form.addRow("Microphone (restart required)", microphone)
+        engine = QComboBox()
+        engine.addItem("British male · natural online voice", "neural")
+        engine.addItem("Windows voice · offline", "windows")
+        engine.setCurrentIndex(max(0, engine.findData(options["speech_engine"])))
+        self.settings_widgets["speech_engine"] = engine
+        form.addRow("Speech output", engine)
         voice = QComboBox()
         voice.addItem("Automatic · prefer British English", "")
         if options["voice"]:
@@ -410,7 +419,7 @@ class Window(QMainWindow):
         # Voice enumeration is performed asynchronously when opening Settings.
         self.voice_combo = voice
         self.settings_widgets["voice"] = voice
-        form.addRow("Windows speech voice", voice)
+        form.addRow("Offline / fallback voice", voice)
         rate = QSpinBox()
         rate.setRange(-10, 10)
         rate.setValue(options["speech_rate"])
@@ -423,7 +432,7 @@ class Window(QMainWindow):
         form.addRow("Speech volume", speech_volume)
         form.addRow(button("Test voice", lambda: self.speaker.say("Good morning, boss. All systems are standing by.")))
         form.addRow(button("Windows voice settings", lambda: os.startfile("ms-settings:speech") if IS_WINDOWS else None))
-        note = label("Install an English (United Kingdom) Windows speech voice for a British sound. This uses available system voices.", "subtitle")
+        note = label("Natural voice: Ryan, British English. Requires internet and sends reply text to Microsoft's speech service. Microphone recognition stays offline. If unavailable, JARVIS uses your installed Windows voice. Install an English (United Kingdom) male Windows voice for a British offline voice.", "subtitle")
         note.setWordWrap(True)
         form.addRow(note)
         uri = QLineEdit(options["spotify_uri"])
@@ -493,7 +502,7 @@ class Window(QMainWindow):
             elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
                 values[key] = widget.value()
             elif isinstance(widget, QComboBox):
-                values[key] = widget.currentData() if key in {"microphone", "voice"} else widget.currentText()
+                values[key] = widget.currentData() if key in {"microphone", "voice", "speech_engine"} else widget.currentText()
             else:
                 values[key] = widget.text().strip()
         if values["spotify_uri"] and not values["spotify_uri"].startswith(("spotify:playlist:", "spotify:track:", "spotify:album:")):
@@ -611,17 +620,23 @@ class Window(QMainWindow):
         self.set_mode("LISTENING · SPEAK NOW")
 
     def wake(self, source="manual"):
+        was_asleep = self.asleep
+        bring_forward = was_asleep or source in {"clap", "manual", "command"} or not self.isVisible()
         self.asleep = False
         self.listener.set_sleep(False)
-        self.showNormal()
-        self.raise_()
-        self.activateWindow()
-        if IS_WINDOWS:
-            import ctypes
-            ctypes.windll.user32.SetForegroundWindow(int(self.winId()))
+        if bring_forward:
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+            if IS_WINDOWS:
+                import ctypes
+                foreground = ctypes.windll.user32.SetForegroundWindow
+                foreground.argtypes = [ctypes.c_void_p]
+                foreground.restype = ctypes.c_int
+                foreground(int(self.winId()))
         self.state_label.setText("●  ONLINE")
         self.set_mode("LISTENING")
-        if source in {"clap", "voice"}:
+        if source == "clap" or (source == "voice" and bring_forward):
             greeting = "Good morning, boss." if source == "clap" else "At your service, boss."
             self.add_message("JARVIS", greeting)
             self.speaker.say(greeting)

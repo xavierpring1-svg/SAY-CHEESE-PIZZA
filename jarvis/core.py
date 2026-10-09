@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA = Path(os.getenv("LOCALAPPDATA", str(Path.home() / ".local/share"))) / "JarvisDesktop"
 
 DEFAULTS = {
-    "name": "Boss", "voice": "", "speech_rate": -1, "speech_volume": 90,
+    "name": "Boss", "voice": "", "speech_engine": "neural", "speech_rate": -1, "speech_volume": 90,
     "clap_threshold": 0.16, "clap_enabled": True, "wake_enabled": True,
     "spotify_on_wake": True, "start_sleeping": False, "microphone": -1,
     "spotify_uri": "", "ai_provider": "Local commands",
@@ -90,9 +90,12 @@ def parse_command(text):
     normalized = text.lower().rstrip(".!?")
     for pattern, action in [
         (r"(?:please\s+)?(?:add (?:a )?task|new task|remind me to)\s*(?:to\s+|:\s*)?(.+)", "add_task"),
+        (r"(?:please\s+)?(?:search(?: in)? chrome for|search chrome|chrome search(?: for)?)\s+(.+)", "chrome_search"),
+        (r"(?:please\s+)?(?:type(?: in)?(?: the)? chrome(?: search| address)? bar|type(?: in)?(?: the)?(?: search| address) bar|write(?: in)?(?: the)?(?: chrome)?(?: search| address) bar|type in chrome)\s+(.+)", "chrome_type"),
         (r"(?:please\s+)?(?:open|launch|start)\s+(.+)", "open_app"),
         (r"(?:search(?: the web)? for|google)\s+(.+)", "search_web"),
-        (r"(?:play|search spotify for)\s+(.+)", "spotify_search"),
+        (r"(?:please\s+)?search spotify for\s+(.+)", "spotify_search"),
+        (r"(?:please\s+)?play\s+(.+)", "spotify_play_song"),
         (r"(?:set\s+)?(?:the\s+)?volume(?:\s+to)?\s+(\d{1,3})(?:\s*(?:percent|%))?", "volume"),
         (r"(?:complete|finish|done with) task\s+(\d+)", "complete_task"),
         (r"(?:delete|remove) task\s+(\d+)", "remove_task"),
@@ -102,9 +105,20 @@ def parse_command(text):
             argument = match.group(1).strip()
             if action == "open_app" and argument.lower() in {"spotify", "music"}:
                 return "spotify", "play"
-            if action == "spotify_search" and argument.lower() in {"spotify", "music", "my music"}:
+            if action == "spotify_play_song" and argument.lower() in {"spotify", "music", "my music"}:
                 return "spotify", "play"
+            if action == "spotify_play_song":
+                argument = re.sub(r"\s+on spotify$", "", argument, flags=re.I).strip()
+            if action in {"spotify_play_song", "spotify_search", "chrome_type", "chrome_search"}:
+                # Preserve casing and punctuation inside matching spoken/typed quotes.
+                quotes = {'"': '"', "'": "'", "“": "”", "‘": "’"}
+                if len(argument) >= 2 and quotes.get(argument[0]) == argument[-1]:
+                    argument = argument[1:-1].strip()
+                if not argument:
+                    return "conversation", text
             return action, argument
+    if normalized in {"search that", "search it", "submit search", "search in chrome", "chrome enter"}:
+        return "chrome_submit", ""
     if normalized in {"sleep", "go to sleep", "sleep mode", "standby", "stand by"}:
         return "sleep", ""
     if normalized in {"wake up", "wake", "hey", "hello", ""}:

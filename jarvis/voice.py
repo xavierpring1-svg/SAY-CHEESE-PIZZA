@@ -1,18 +1,17 @@
 from __future__ import annotations
 
-import base64
 import json
 import queue
 import re
-import subprocess
 import threading
 import time
 
 from PySide6.QtCore import Signal
 from .worker import Worker
 from .core import ROOT, ClapDetector
-from .windows import IS_WINDOWS, NO_WINDOW, powershell
+from .windows import IS_WINDOWS, powershell
 from .model import model_path
+from .british_speech import SpeechCancelled, SpeechOutput
 
 
 class Speaker(Worker):
@@ -25,10 +24,11 @@ class Speaker(Worker):
         self.queue = queue.Queue()
         self.active = threading.Event()
         self.running = True
-        self.process = None
-        self.process_lock = threading.Lock()
+        self.output = SpeechOutput(lambda: self.running, self.problem.emit)
 
     def say(self, text):
+        if not self.running or not text:
+            return
         # Mark busy before starting TTS so playback never feeds commands back in.
         self.active.set()
         self.queue.put(text)
@@ -44,30 +44,11 @@ class Speaker(Worker):
                 if not IS_WINDOWS:
                     self.problem.emit("Speech output is available in the Windows release.")
                     continue
-                options = self.store.settings
-                payload = base64.b64encode(json.dumps({"text": text[:5000], "voice": options["voice"],
-                                                      "rate": options["speech_rate"], "volume": options["speech_volume"]}).encode()).decode()
-                script = "$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + payload + "')) | ConvertFrom-Json; "
-                script += "Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-                script += "if($p.voice){$s.SelectVoice($p.voice)}else{$v=$s.GetInstalledVoices() | Where-Object {$_.Enabled -and $_.VoiceInfo.Culture.Name -eq 'en-GB'} | Select-Object -First 1; if($v){$s.SelectVoice($v.VoiceInfo.Name)}}; $s.Rate=[int]$p.rate; $s.Volume=[int]$p.volume; $s.Speak([string]$p.text); $s.Dispose()"
-                with self.process_lock:
-                    if not self.running:
-                        break
-                    self.process = subprocess.Popen(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-                                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                                    creationflags=NO_WINDOW)
-                    process = self.process
-                try:
-                    if process.wait(timeout=180) and self.running:
-                        raise RuntimeError("Speech synthesis failed")
-                except subprocess.TimeoutExpired:
-                    process.terminate()
-                    raise RuntimeError("Speech synthesis timed out")
-                finally:
-                    with self.process_lock:
-                        self.process = None
+                self.output.speak(text, self.store.settings)
+            except SpeechCancelled:
+                break
             except Exception:
-                self.problem.emit("Speech output failed. Choose an installed Windows voice in Settings.")
+                self.problem.emit("Speech output failed. Check your audio device or choose an installed Windows voice in Settings.")
             finally:
                 time.sleep(0.25)
                 if self.queue.empty():
@@ -76,9 +57,8 @@ class Speaker(Worker):
 
     def stop(self):
         self.running = False
-        with self.process_lock:
-            if self.process is not None and self.process.poll() is None:
-                self.process.terminate()
+        self.output.stop()
+        self.active.clear()
         self.queue.put(None)
 
 

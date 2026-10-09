@@ -14,8 +14,11 @@ from .worker import Worker
 
 from .core import parse_command
 from .windows import Spotify, media_key, set_volume, gpu_usage, IS_WINDOWS
+from .chrome import Chrome
 
-HELP = ('Try “Hey Jarvis, open Chrome”, “add task buy groceries”, “pause music”, '
+HELP = ('Try “Hey Jarvis, play Bohemian Rhapsody by Queen”, “search Chrome for weather”, '
+        '“type in the search bar pizza near me”, then “search that”, '
+        '“open Chrome”, “add task buy groceries”, “pause music”, '
         '“next song”, “volume 40”, “what time is it”, “show my tasks”, or “go to sleep”. '
         'For open-ended conversation, connect Ollama or OpenAI in Settings.')
 
@@ -32,6 +35,7 @@ class Assistant(Worker):
         super().__init__()
         self.store, self.apps, self.speaker = store, apps, speaker
         self.spotify = Spotify()
+        self.chrome = Chrome(apps)
         self.queue = queue.Queue()
         self.history = []
         self.running = True
@@ -52,6 +56,20 @@ class Assistant(Worker):
             self.speaker.say(text)
 
     def run(self):
+        apartment = None
+        try:
+            if IS_WINDOWS:
+                from winrt import runtime
+                runtime.init_apartment(runtime.ApartmentType.MULTI_THREADED)
+                apartment = runtime
+            self._run_commands()
+        except Exception:
+            self.reply("The Windows command worker couldn't start. Open Debug JARVIS.cmd to check the installation.", speak=False)
+        finally:
+            if apartment is not None:
+                apartment.uninit_apartment()
+
+    def _run_commands(self):
         self.apps.discover()
         while self.running:
             item = self.queue.get()
@@ -108,6 +126,14 @@ class Assistant(Worker):
             return self.spotify.control(argument)
         if action == "spotify_search":
             return self.spotify.search(argument)
+        if action == "spotify_play_song":
+            return self.spotify.play(argument, cancelled=lambda: not self.running)
+        if action == "chrome_search":
+            return self.chrome.search(argument)
+        if action == "chrome_type":
+            return self.chrome.type_search(argument)
+        if action == "chrome_submit":
+            return self.chrome.submit_search()
         if action == "volume":
             return set_volume(argument)
         if action == "media_key":
@@ -144,8 +170,9 @@ class Assistant(Worker):
             "name": "desktop_action", "description": "Perform a supported local desktop operation.",
             "parameters": {"type": "object", "properties": {
                 "action": {"type": "string", "enum": ["add_task", "list_tasks", "complete_task",
-                    "open_app", "search_web", "spotify", "spotify_search", "volume", "clock", "stats"]},
-                "argument": {"type": "string", "description": "App name, task text, task number, search query, volume 0-100; for spotify: play, pause, next or previous"}},
+                    "open_app", "search_web", "chrome_search", "chrome_type", "chrome_submit",
+                    "spotify", "spotify_search", "spotify_play_song", "volume", "clock", "stats"]},
+                "argument": {"type": "string", "description": "App name, task text, task number, search query, volume 0-100. spotify_play_song plays the named song (include artist if known); spotify_search only opens results. chrome_type writes literal text into Chrome's address bar; chrome_search types and submits a search; chrome_submit submits the unchanged pending text. For spotify: play, pause, next or previous."}},
                 "required": ["action", "argument"], "additionalProperties": False}}}]
         messages = [{"role": "system", "content": system}] + self.history[-12:] + [{"role": "user", "content": text}]
         for _ in range(4):

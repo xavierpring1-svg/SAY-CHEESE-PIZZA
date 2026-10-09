@@ -2,11 +2,18 @@
 
 ## Download the desktop app
 
-**[Download JARVIS for Windows 10/11 (80 MB ZIP)](https://github.com/xavierpring1-svg/SAY-CHEESE-PIZZA/raw/refs/heads/main/downloads/JARVIS-Windows.zip)**
+**[Download JARVIS 1.1 for Windows 10/11](https://github.com/xavierpring1-svg/SAY-CHEESE-PIZZA/raw/refs/heads/main/downloads/JARVIS-Windows.zip?v=1.1.0)**
 
 Extract the whole ZIP, open **JARVIS.exe**, then run **Create Desktop Shortcut.cmd**.
 Do not use GitHub's green **Code → Download ZIP** button for the desktop app; use the
 link above, which includes the bundled Windows runtime.
+
+Already have JARVIS? Choose **Quit JARVIS**, extract this version into a new folder,
+and recreate the desktop shortcut. Your saved tasks and settings remain in AppData.
+
+New in 1.1: **play Hello by Adele**, **search Chrome for weather**, and
+**type in the search bar pizza near me**, then **search that**. The default
+speech voice is now a natural British male voice.
 
 [Download page](https://xavierpring1-svg.github.io/SAY-CHEESE-PIZZA/)
 · [SHA256 checksum](downloads/JARVIS-Windows.sha256)
@@ -46,11 +53,17 @@ require testing on your PC. The launcher is unsigned. If startup fails, run
   Settings for your microphone and room; false detections are possible in loud environments.
 - The offline model is US English; accent and microphone quality affect transcription.
 
-Speech uses installed Windows voices. It prefers British English when available.
-In **Settings → Windows voice settings**, install English (United Kingdom) speech,
-then restart JARVIS and select a voice. The voice has a composed assistant style;
-it does not reproduce the actor's exact film voice. Replies pause recognition to avoid
-hearing JARVIS's own speech, so speak after the reply finishes.
+Speech defaults to **Ryan, British English**, using Microsoft's online neural speech
+service through edge-tts. This needs internet and sends the text of spoken replies to
+Microsoft; microphone recognition remains offline. Temporary response audio is deleted
+after playback. If the service is unavailable, JARVIS reports the problem and uses
+installed Windows speech.
+
+Choose **Settings → Speech output → Windows voice · offline** to keep speech offline.
+Install English (United Kingdom) speech through **Windows voice settings**, restart,
+then choose an installed British voice. Windows voices depend on what is installed.
+The voice does not reproduce the actor's exact film voice. Replies pause recognition
+to avoid hearing JARVIS's own speech, so speak after the reply finishes.
 
 ## Spotify and SpotX
 
@@ -64,8 +77,16 @@ Examples: **play Spotify**, **pause music**, **next song**, **previous track**,
 **volume 40**, **mute**, **unmute**. Optional wake playlist/track URI in Settings:
 `spotify:playlist:YOUR_PLAYLIST_ID`.
 
-**play [song or artist]** opens Spotify's search results; selecting a specific result
-is done in Spotify. Automatic search-result playback is not claimed.
+Say **Hey Jarvis, play Hello by Adele** or type **play "Bohemian Rhapsody"**.
+JARVIS opens Spotify's search, selects a matching accessible **song** Play control,
+and reports success after the Windows media session confirms that song is playing.
+Including the artist helps distinguish tracks. **search Spotify for Queen** only
+opens search results.
+
+Automatic song selection depends on the installed client's English accessibility
+labels and layout. SpotX changes, adverts, unavailable songs, or missing media metadata
+can prevent it. In that case JARVIS tells you to select the track manually; it does
+not claim playback succeeded. The Spotify desktop app must be installed and signed in.
 
 ## Desktop commands and tasks
 
@@ -80,12 +101,22 @@ is done in Spotify. Automatic search-result playback is not claimed.
 | what time is it | Speak local time and date |
 | system status | Speak available utilisation statistics |
 | search the web for pizza recipes | Open a browser search |
+| play Hello by Adele | Select a matching Spotify song and verify playback |
+| search Chrome for weather tomorrow | Type and submit a search in Google Chrome |
+| type in the search bar pizza near me | Write text in Chrome's address/search bar |
+| search that | Submit the unchanged pending Chrome text as a search |
 | go to sleep | Hide to the tray and keep wake detection armed |
 
 Applications are discovered from Start Menu shortcuts, Windows app registrations, and
 Store app IDs. Unregistered portable apps can be added in **Applications → Register an
 app shortcut**. Ambiguous names need a more specific app name. Windows may require its
 normal elevation prompt for administrative apps.
+
+Chrome commands open or focus Google Chrome and identify its address/search bar.
+Dictated text is entered literally, including punctuation. **search that** works only
+while the original bar still has focus and its text remains unchanged. If another
+window or a page form takes focus, JARVIS stops and asks you to try again. Searches
+use Chrome's configured search engine. This feature needs desktop Google Chrome.
 
 Tasks and settings live in `%LOCALAPPDATA%\JarvisDesktop`. The microphone choice is
 applied after a restart. GPU metrics use NVIDIA's driver utility when present, or Windows
@@ -117,7 +148,11 @@ commands. It reports errors when an operation cannot be completed.
   Model files remain local after download, so recognition works offline afterward.
 - **Spotify opened but did not play**: play one track manually, then issue play Spotify.
   Make sure its media session is available and its current account permits playback.
-- **No speech**: select an installed voice, check Speech volume, and test it in Settings.
+- **No speech**: check Speech volume and Test voice. For natural British speech, allow
+  internet access to `speech.platform.bing.com`; otherwise choose Windows voice · offline.
+- **Named song not selected**: include its artist, bring Spotify forward, and check
+  that its song Play buttons are accessible. Unsupported layouts require manual selection.
+- **Chrome typing stops**: keep Chrome in front, use a normal browser window, and retry.
 - **AI connection fails**: check the chosen model, API access, or that Ollama is running.
 - **Missing VC++ runtime**: install Microsoft's x64 Visual C++ 2015–2022 Redistributable
   from https://aka.ms/vs/17/release/vc_redist.x64.exe and restart the app.
