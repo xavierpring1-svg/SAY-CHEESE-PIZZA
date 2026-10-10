@@ -1,4 +1,54 @@
-# Validation report — JARVIS 1.2
+# Validation report — JARVIS 1.3.1
+
+Validated on 10 October 2026 in the Linux cloud environment with Python 3.12.14,
+PySide 6.9.3 and pytest 8.4.2: **539 tests passed**, with one existing Python 3.13
+`audioop` deprecation warning. `pip check` passed; desktop, PortAudio, Vosk,
+sherpa-onnx and edge-tts imports succeeded. The reusable installation script was
+rerun successfully with the existing dependencies.
+
+The actual `main.py --demo --screenshot` entry point rendered a valid 1360×920
+dashboard. The holographic layout was also inspected at its 1080×780 minimum.
+Tests exercise speech-boundary mouth movement, interruption/sleep closure,
+portrait restoration/fallback, retained tabs/clock, removed telemetry panels,
+music buttons, and app-volume routing.
+
+The previous package contains `pywinauto`, but its import chain loads `win32ui.pyd`,
+whose PE imports include `mfc140u.dll`; that DLL is absent from the bundle. The user's
+reported song-selection error confirms an import failure before Spotify searching.
+The exact missing component on that physical PC has not been independently measured.
+The updated Chrome/Spotify action paths avoid this MFC dependency entirely and use
+native UI Automation through `comtypes` and Windows' built-in `UIAutomationCore.dll`.
+
+Chrome tests verify direct, percent-encoded Google URL launching without UIA/WinRT,
+Chrome executable discovery, and transient accessibility retries. A matching dictated
+query submits the same focused, unchanged address bar and stops after focus/text
+changes. Native adapter tests cover thread-local COM clients, live element metadata,
+runtime IDs, value/invoke patterns, targeted default actions, and denied foreground
+focus. SpotX tests verify exact song/artist row matching, hidden Play buttons, changed
+rows, selection without playback, and focus loss. They also verify
+next/previous/replay metadata and seek checks, exact Spotify session identity,
+and Spotify-only audio volume/mute readback across output devices. API signatures
+were checked against the pinned pycaw and WinRT distributions. Native Windows
+execution, microphone, speakers, actual Chrome and SpotX still require PC testing.
+
+Public encyclopedia lookup handles sourced summaries, ambiguity, no match,
+malformed/oversize responses and HTTPS redirects in tests. Its live request is
+**unverified** because this cloud proxy refused `en.wikipedia.org` with HTTP 403.
+The domain requirement is saved in the environment draft. General local AI remains
+the default; the real conversation model was not downloaded or evaluated here.
+
+The read-only desktop diagnostic checks component availability without printing window
+titles, song metadata, paths, credentials, or arbitrary exception payloads. Linux
+reports that the checks require Windows. Action errors report client-specific guidance
+and safe exception class/numeric codes rather than a generic connection message.
+
+The 1.3.1 Windows repack verifies the original ZIP checksum, CRC and bundled source
+hashes; preserves its runtime and native launcher byte-for-byte; refreshes current
+sources, portrait asset and source hashes; and verifies output ZIP integrity.
+The manifest explicitly records runtime reuse. This is not a fresh upstream wheel
+verification or a Windows launch test.
+
+## Previous 1.2 validation
 
 Validated on 9 October 2026 in Linux with Python 3.12, PySide 6.9.3,
 pytest 8.4.2, Qt offscreen rendering, Vosk 0.3.45 and sherpa-onnx 1.13.8.

@@ -187,6 +187,44 @@ def parse_command(text):
     command = _command_prefix(text)
     normalized = command.lower().rstrip(".!?").strip()
 
+    # A follow-up submits only the pending, unchanged Chrome address bar.
+    # Match these before query patterns so "what I typed" stays a reference.
+    if normalized in {"search that", "search it", "submit search", "search in chrome",
+                      "chrome enter", "press enter in chrome", "search up that", "search up it",
+                      "search up anything on the tab", "search anything on the tab",
+                      "search up what's on the tab", "search up what is on the tab",
+                      "search up what i typed", "search what i typed", "search up the text",
+                      "search the text on the tab", "search up whatever is on the tab"}:
+        return "chrome_submit", ""
+    reference = r"(?:that|it|what i typed|what(?:'s| is) (?:on|in) the tab|(?:anything|whatever is) (?:on|in) the tab|the text(?: (?:on|in) the tab)?)"
+    if re.fullmatch(rf"search(?:\s+up)?\s+{reference}(?:\s+(?:in|on|using)\s+{_CHROME})?", normalized):
+        return "chrome_submit", ""
+
+    music_target = rf"(?:{_SPOTIFY}|music)"
+    for pattern in [
+        rf"(?:(?:set|change|adjust|turn)\s+)?(?:the\s+)?{music_target}(?:'s)?\s+(?:volume|sound)(?:\s+to)?\s+(.+?)(?:\s*(?:percent|per cent|%))?",
+        rf"(?:(?:set|change|adjust|turn)\s+)?(?:the\s+)?volume(?:\s+to)?\s+(.+?)(?:\s*(?:percent|per cent|%))?\s+(?:on|in|for)\s+{music_target}",
+        rf"(?:(?:set|change|adjust|turn)\s+)?(?:the\s+)?volume\s+(?:of|on|in|for)\s+{music_target}(?:\s+to)?\s+(.+?)(?:\s*(?:percent|per cent|%))?",
+    ]:
+        match = re.fullmatch(pattern, normalized)
+        if match:
+            number = _spoken_number(match.group(1))
+            if number is not None:
+                return "spotify_volume", str(number)
+    if re.fullmatch(rf"(?:mute|unmute)\s+(?:the\s+)?{music_target}", normalized):
+        return "spotify_audio", normalized.split()[0]
+    for direction, verbs in [("up", "increase|raise"), ("down", "decrease|lower|reduce")]:
+        if (re.fullmatch(rf"(?:turn\s+)?(?:the\s+)?{music_target}(?:'s)?\s+volume\s+{direction}", normalized)
+                or re.fullmatch(rf"(?:turn\s+)?(?:the\s+)?volume\s+{direction}\s+(?:on|in|for)\s+{music_target}", normalized)
+                or re.fullmatch(rf"(?:{verbs})\s+(?:the\s+)?{music_target}(?:'s)?\s+volume", normalized)):
+            return "spotify_audio", "volume " + direction
+    if re.fullmatch(rf"(?:replay|restart|repeat)\s+(?:(?:the|this|that)\s+)?(?:current\s+)?(?:song|track)(?:\s+(?:on|in|using)\s+{music_target})?", normalized):
+        return "spotify", "replay"
+    if re.fullmatch(rf"(?:next|skip)(?:\s+(?:the|this|current))?(?:\s+(?:song|track))?(?:\s+(?:on|in|using)\s+{music_target})?", normalized):
+        return "spotify", "next"
+    if re.fullmatch(rf"previous(?:\s+(?:song|track))?(?:\s+(?:on|in|using)\s+{music_target})?", normalized):
+        return "spotify", "previous"
+
     # Numeric arguments are normalized separately from literal parameters.
     numeric = [
         (r"(?:(?:set|change|adjust|turn)\s+)?(?:the\s+)?volume(?:\s+to)?\s+(.+?)(?:\s*(?:percent|per cent|%))?", "volume"),
@@ -219,11 +257,13 @@ def parse_command(text):
         (r"remind me to\s+(.+)", "add_task"),
         (r"add\s+(.+?)\s+to\s+(?:my\s+)?(?:tasks|task list)[.!?]*", "add_task"),
         (rf"(?:search(?:\s+(?:in|on))?\s+{_CHROME}(?:\s+for)?|{_CHROME}\s+search(?:\s+for)?)\s+(.+)", "chrome_search"),
-        (rf"search(?:\s+for)?\s+(.+?)\s+(?:in|on|using)\s+{_CHROME}[.!?]*", "chrome_search"),
+        (rf"search(?:\s+(?:up|for))?\s+(.+?)\s+(?:in|on|using)\s+{_CHROME}[.!?]*", "chrome_search"),
         (rf"(?:type|write)\s+(.+?)\s+(?:in|into|on)\s+(?:{bar}|{_CHROME})[.!?]*", "chrome_type"),
         (rf"(?:type|write)(?:\s+(?:in|into|on))?\s+(?:{bar}|{_CHROME})\s+(.+)", "chrome_type"),
         (rf"search(?:\s+(?:on|in))?\s+{_SPOTIFY}(?:\s+for)?\s+(.+)", "spotify_search"),
         (rf"search(?:\s+for)?\s+(.+?)\s+(?:on|in|using)\s+{_SPOTIFY}[.!?]*", "spotify_search"),
+        (r"search\s+up\s+(.+)", "chrome_search"),
+        (r"(?:tell me (?:about|information (?:about|on)|info (?:about|on))|look up information (?:about|on)|research)\s+(.+)", "knowledge"),
         (r"(?:search(?: the web)? for|google|look up)\s+(.+)", "search_web"),
         (r"(?:play|put on|start playing)\s+(.+)", "spotify_play_song"),
         (r"(?:open|launch|start)\s+(.+)", "open_app"),
@@ -257,8 +297,6 @@ def parse_command(text):
             return action, argument
         return "conversation", text
 
-    if normalized in {"search that", "search it", "submit search", "search in chrome", "chrome enter", "press enter in chrome"}:
-        return "chrome_submit", ""
     if normalized in {"sleep", "go to sleep", "sleep mode", "standby", "stand by"}:
         return "sleep", ""
     if normalized in {"wake up", "wake", "hey", "hello", ""}:

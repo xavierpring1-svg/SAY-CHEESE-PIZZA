@@ -156,7 +156,7 @@ def test_ui_tasks_sleep_wake_and_settings(qt, tmp_path, monkeypatch):
     assert not window.asleep
     assert events == ["Good morning, boss.", "spotify"]
     assert window.clock_label.text()
-    assert window.stat_labels["CPU"].text().endswith("%")
+    assert not hasattr(window, "stat_labels")
     window.quitting = True
     window.close()
 
@@ -178,6 +178,7 @@ def test_download_rejects_unsafe_archive(tmp_path, monkeypatch):
 def test_spotify_session_control_reports_actual_result(monkeypatch):
     import asyncio
     import jarvis.windows as windows
+    import jarvis.spotify_desktop as desktop
     calls = []
     class Session:
         async def try_play_async(self):
@@ -196,6 +197,9 @@ def test_spotify_session_control_reports_actual_result(monkeypatch):
     async def session():
         return Session()
     monkeypatch.setattr(spotify, "_session", session)
+    async def playback(_session):
+        return desktop.PlaybackState("Spotify.exe", "Song", "Artist", True, 20)
+    monkeypatch.setattr(desktop, "read_session_playback", playback)
     monkeypatch.setattr(os, "startfile", lambda uri: calls.append(uri), raising=False)
     assert "Playing" in asyncio.run(spotify._control("play"))
     assert calls == ["spotify:", "play"]

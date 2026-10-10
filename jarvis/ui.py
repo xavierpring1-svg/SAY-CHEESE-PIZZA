@@ -6,7 +6,6 @@ import os
 import threading
 import time
 
-import psutil
 from PySide6.QtCore import Qt, QTimer, Signal, QObject, QSize
 from PySide6.QtGui import QColor, QPainter, QPen, QFont, QIcon, QPixmap, QCloseEvent
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -15,30 +14,32 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
     QSystemTrayIcon, QMenu, QFileDialog, QMessageBox, QDoubleSpinBox, QProgressBar)
 
 from .core import Store, ROOT
-from .windows import Apps, IS_WINDOWS, gpu_usage
+from .windows import Apps, IS_WINDOWS
 from .voice import Speaker, Listener, available_voices
 from .assistant import Assistant, HELP
 from .model import model_path, ModelInstaller, MODELS, selected_model_key
-from .ui_components import Reactor, Sparkline, MicrophoneMeter
+from .ui_components import Hologram, MicrophoneMeter
 from . import __version__
 
 STYLE = """
 * { font-family: 'Segoe UI'; font-size: 13px; color: #dce9f3; }
-QMainWindow, QWidget#shell { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0c1829, stop:0.55 #090f1c, stop:1 #0c1623); }
-QWidget#settingsPage { background: #0a1422; }
-QWidget#sidebar { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #101e30, stop:1 #0b1423); border-right: 1px solid #1b3248; }
+QMainWindow, QWidget#shell { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #06121d, stop:0.55 #030b13, stop:1 #081c2b); }
+QWidget#settingsPage { background: #071420; }
+QWidget#sidebar { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #0a1d2a, stop:1 #05101c); border-right: 1px solid #173d4f; }
 QLabel#brand { font-size: 31px; font-weight: 600; letter-spacing: 5px; color: #c5f5ff; }
-QLabel#eyebrow { color: #759aaf; font-size: 10px; letter-spacing: 2px; font-weight: 500; }
+QLabel#eyebrow { color: #6babbc; font-size: 10px; letter-spacing: 2px; font-weight: 500; }
 QLabel#title { font-size: 26px; font-weight: 600; color: #eef8ff; }
-QLabel#stateTitle { font-size: 24px; font-weight: 500; color: #d9f9ff; }
+QLabel#stateTitle { font-size: 19px; font-weight: 500; color: #d9f9ff; }
 QLabel#subtitle { color: #91aabd; font-size: 12px; }
 QLabel#clock { font-size: 29px; font-weight: 300; color: #dff6ff; }
 QLabel#number { font-size: 25px; font-weight: 500; color: #e3f6ff; }
 QLabel#statusPill { color: #6fdfd6; background: #102b35; border: 1px solid #234854; border-radius: 7px; padding: 7px 10px; font-size: 11px; }
 QLabel#warning { color: #e5ba7a; font-size: 11px; }
-QFrame#card { background: qlineargradient(x1:0, y1:0, x2:0.7, y2:1, stop:0 #112237, stop:1 #0c192a); border: 1px solid #21394e; border-radius: 15px; }
-QFrame#conversation { background: #0d192a; border: 1px solid #21394e; border-radius: 15px; }
-QFrame#composer { background: #112338; border: 1px solid #2d5066; border-radius: 12px; }
+QFrame#card { background: qlineargradient(x1:0, y1:0, x2:0.7, y2:1, stop:0 #0b2030, stop:1 #071420); border: 1px solid #1d4559; border-radius: 12px; }
+QFrame#portraitPanel { background: #030d17; border: 1px solid #1c576e; border-radius: 12px; }
+QFrame#conversation { background: #091724; border: 1px solid #1b3e51; border-radius: 12px; }
+QFrame#musicPanel { background: #0b2130; border: 1px solid #204b5e; border-radius: 9px; }
+QFrame#composer { background: #0b2131; border: 1px solid #2d657b; border-radius: 12px; }
 QPushButton { background: #162b40; border: 1px solid #29475c; border-radius: 8px; padding: 10px 13px; color: #cfdfeb; }
 QPushButton:hover { background: #1b3a50; border-color: #58c6d3; color: #edfaff; }
 QPushButton:pressed { background: #244c61; }
@@ -100,10 +101,6 @@ def card():
     return frame, layout
 
 
-class Telemetry(QObject):
-    gpu = Signal(object, str)
-
-
 class Window(QMainWindow):
     def __init__(self, store=None, start_workers=True):
         super().__init__()
@@ -124,13 +121,9 @@ class Window(QMainWindow):
         self.last_mic_level = 0.0
         self.voice_state = "Voice setup"
         self.brain_message = "Conversation setup"
-        self.gpu_value = None
-        self.gpu_busy = False
-        self.telemetry = Telemetry()
-        self.telemetry.gpu.connect(self.gpu_updated)
         self.setWindowTitle(f"JARVIS {__version__} · Desktop Assistant")
-        self.resize(1280, 850)
-        self.setMinimumSize(1020, 740)
+        self.resize(1360, 920)
+        self.setMinimumSize(1080, 780)
         self.setWindowIcon(self.make_icon())
         shell = QWidget()
         shell.setObjectName("shell")
@@ -141,9 +134,9 @@ class Window(QMainWindow):
 
         side = QWidget()
         side.setObjectName("sidebar")
-        side.setFixedWidth(208)
+        side.setFixedWidth(195)
         sidebar = QVBoxLayout(side)
-        sidebar.setContentsMargins(20, 32, 18, 24)
+        sidebar.setContentsMargins(18, 30, 16, 24)
         sidebar.setSpacing(8)
         sidebar.addWidget(label("JARVIS", "brand"))
         sidebar.addWidget(label("PERSONAL ASSISTANT", "eyebrow"))
@@ -167,12 +160,12 @@ class Window(QMainWindow):
         root.addWidget(side)
 
         content = QVBoxLayout()
-        content.setContentsMargins(30, 27, 30, 25)
+        content.setContentsMargins(26, 25, 26, 22)
         content.setSpacing(14)
         header = QHBoxLayout()
         titles = QVBoxLayout()
         titles.setSpacing(5)
-        titles.addWidget(label("YOUR PERSONAL ASSISTANT", "eyebrow"))
+        titles.addWidget(label("J.A.R.V.I.S. / COMMAND CENTRE", "eyebrow"))
         self.page_title = label("At your service, boss.", "title")
         titles.addWidget(self.page_title)
         self.page_subtitle = label("Speak naturally. Make things happen.", "subtitle")
@@ -188,25 +181,6 @@ class Window(QMainWindow):
         clock_box.addWidget(self.date_label)
         header.addLayout(clock_box)
         content.addLayout(header)
-        stats = QHBoxLayout()
-        stats.setSpacing(13)
-        self.stat_labels = {}
-        self.stat_charts = {}
-        for title in ["CPU", "GPU", "MEMORY"]:
-            frame, layout = card()
-            layout.setContentsMargins(18, 12, 18, 11)
-            layout.setSpacing(4)
-            layout.addWidget(label(title + " UTILISATION", "eyebrow"))
-            metric_row = QHBoxLayout()
-            value = label("—", "number")
-            self.stat_labels[title] = value
-            metric_row.addWidget(value)
-            chart = Sparkline("#75aecf" if title == "MEMORY" else "#6c9dde" if title == "GPU" else "#51d0d8")
-            self.stat_charts[title] = chart
-            metric_row.addWidget(chart, 1)
-            layout.addLayout(metric_row)
-            stats.addWidget(frame)
-        content.addLayout(stats)
         self.stack = QStackedWidget()
         self.build_dashboard()
         self.build_tasks()
@@ -253,19 +227,15 @@ class Window(QMainWindow):
         if hasattr(self.assistant, "brain_status"):
             self.assistant.brain_status.connect(self.brain_status_changed)
         self.clock_timer = QTimer(self)
-        self.clock_timer.timeout.connect(self.update_stats)
+        self.clock_timer.timeout.connect(self.update_clock)
         self.clock_timer.start(1000)
-        self.gpu_timer = QTimer(self)
-        self.gpu_timer.timeout.connect(self.poll_gpu)
-        self.gpu_timer.start(5000)
-        self.update_stats()
+        self.update_clock()
         self.refresh_tasks()
         self.add_message("JARVIS", "At your service, boss. Say ‘Hey Jarvis’, then tell me what you need. You can also click Listen or type below.")
         if start_workers:
             self.speaker.start()
             self.assistant.start()
             self.start_voice()
-            self.poll_gpu()
             if self.store.settings["start_sleeping"]:
                 QTimer.singleShot(300, self.sleep)
 
@@ -292,12 +262,17 @@ class Window(QMainWindow):
         middle.setSpacing(15)
 
         reactor_card, reactor_layout = card()
-        reactor_card.setMinimumWidth(295)
-        reactor_card.setMaximumWidth(350)
-        reactor_layout.setContentsMargins(18, 15, 18, 15)
-        reactor_layout.setSpacing(5)
-        self.reactor = Reactor()
-        reactor_layout.addWidget(label("VOICE CONNECTION", "eyebrow"))
+        reactor_card.setObjectName("portraitPanel")
+        reactor_card.setMinimumWidth(315)
+        reactor_layout.setContentsMargins(16, 14, 16, 15)
+        reactor_layout.setSpacing(8)
+        portrait_header = QHBoxLayout()
+        portrait_header.addWidget(label("J.A.R.V.I.S.", "eyebrow"))
+        portrait_header.addStretch()
+        portrait_header.addWidget(label("VOICE CONNECTION", "eyebrow"))
+        reactor_layout.addLayout(portrait_header)
+        self.reactor = Hologram()
+        self.hologram = self.reactor
         reactor_layout.addWidget(self.reactor, 1)
         self.activity_title = label("Getting ready", "stateTitle")
         self.activity_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -310,7 +285,7 @@ class Window(QMainWindow):
         reactor_layout.addWidget(self.mic_meter)
         mic_row = QHBoxLayout()
         self.mic_device_label = label("MICROPHONE", "eyebrow")
-        self.mic_device_label.setMaximumWidth(210)
+        self.mic_device_label.setMaximumWidth(290)
         self.mic_device_label.setToolTip("The active Windows microphone appears here after voice setup.")
         mic_row.addWidget(self.mic_device_label, 1)
         self.mic_level_label = label("0%", "subtitle")
@@ -333,16 +308,7 @@ class Window(QMainWindow):
         self.stop_button.setEnabled(False)
         actions.addWidget(self.stop_button)
         reactor_layout.addLayout(actions)
-        reactor_layout.addSpacing(4)
-        reactor_layout.addWidget(label("SPOTIFY", "eyebrow"))
-        spotify_row = QHBoxLayout()
-        spotify_row.setSpacing(5)
-        for name, command in [("Previous", "previous song"), ("Play", "play spotify"), ("Pause", "pause music"), ("Next", "next song")]:
-            control = button(name, lambda checked=False, text=command: self.assistant.submit(text))
-            control.setObjectName("small")
-            spotify_row.addWidget(control)
-        reactor_layout.addLayout(spotify_row)
-        middle.addWidget(reactor_card, 2)
+        middle.addWidget(reactor_card, 5)
 
         conversation = QFrame()
         conversation.setObjectName("conversation")
@@ -358,6 +324,7 @@ class Window(QMainWindow):
         self.brain_badge.setToolTip("Natural conversation can be enabled in Settings.")
         conversation_header.addWidget(self.brain_badge)
         chat_layout.addLayout(conversation_header)
+        chat_layout.addWidget(label("Ask a question. Plan your day. Control your PC.", "subtitle"))
         self.chat = QTextBrowser()
         self.chat.setObjectName("chat")
         self.chat.setOpenExternalLinks(False)
@@ -387,7 +354,47 @@ class Window(QMainWindow):
         self.brain_download_label.setTextFormat(Qt.TextFormat.PlainText)
         self.brain_download_label.hide()
         chat_layout.addWidget(self.brain_download_label)
-        middle.addWidget(conversation, 3)
+        music = QFrame()
+        music.setObjectName("musicPanel")
+        music_layout = QVBoxLayout(music)
+        music_layout.setContentsMargins(12, 11, 12, 11)
+        music_layout.setSpacing(8)
+        music_heading = QHBoxLayout()
+        music_heading.addWidget(label("SPOTIFY / SPOTX", "eyebrow"))
+        music_heading.addStretch()
+        music_heading.addWidget(label("Your music, on this PC", "subtitle"))
+        music_layout.addLayout(music_heading)
+        spotify_row = QHBoxLayout()
+        spotify_row.setSpacing(5)
+        self.music_buttons = {}
+        for name, command in [("Previous", "previous song"), ("Replay", "replay song"),
+                              ("Play", "play spotify"), ("Pause", "pause music"), ("Next", "next song")]:
+            control = button(name, lambda checked=False, text=command: self.assistant.submit(text))
+            control.setObjectName("small")
+            control.setAccessibleName(name + " Spotify music")
+            self.music_buttons[name] = control
+            spotify_row.addWidget(control, 1)
+        music_layout.addLayout(spotify_row)
+        volume_row = QHBoxLayout()
+        volume_row.addWidget(label("Set volume", "subtitle"))
+        self.spotify_volume = QSlider(Qt.Orientation.Horizontal)
+        self.spotify_volume.setRange(0, 100)
+        self.spotify_volume.setValue(50)
+        self.spotify_volume.setAccessibleName("Set Spotify or SpotX app volume")
+        self.spotify_volume.setToolTip("Choose Spotify / SpotX's volume. Other apps keep their own volume.")
+        self.spotify_volume_preview = label("50%", "subtitle")
+        self.spotify_volume_preview.setMinimumWidth(35)
+        self.spotify_volume.valueChanged.connect(lambda value: self.spotify_volume_preview.setText(f"{value}%"))
+        self.spotify_volume.sliderReleased.connect(self.set_music_volume)
+        volume_row.addWidget(self.spotify_volume, 1)
+        volume_row.addWidget(self.spotify_volume_preview)
+        # The button also lets keyboard users apply an exact selected level.
+        apply_volume = button("Apply", self.set_music_volume)
+        apply_volume.setObjectName("small")
+        volume_row.addWidget(apply_volume)
+        music_layout.addLayout(volume_row)
+        chat_layout.addWidget(music)
+        middle.addWidget(conversation, 6)
         layout.addLayout(middle, 1)
 
         composer = QFrame()
@@ -398,7 +405,7 @@ class Window(QMainWindow):
         entry.addWidget(label("›", "number"))
         self.command_entry = QLineEdit()
         self.command_entry.setObjectName("commandInput")
-        self.command_entry.setPlaceholderText('Say hello to Sarah, play a song, or add a task…')
+        self.command_entry.setPlaceholderText('Search Chrome, replay a song, or ask me anything…')
         self.command_entry.returnPressed.connect(self.submit_entry)
         entry.addWidget(self.command_entry, 1)
         entry.addWidget(button("Send  ↗", self.submit_entry, True))
@@ -406,13 +413,16 @@ class Window(QMainWindow):
         suggestions = QHBoxLayout()
         suggestions.setSpacing(14)
         suggestions.addWidget(label("TRY ASKING", "eyebrow"))
-        for title, command in [("Say hello to Sarah", "say hello to Sarah"), ("Play a song", "play Hello by Adele"), ("Add a task", "add task ")]:
+        for title, command in [("Search Chrome", "search Chrome for "), ("Play a song", "play Hello by Adele"), ("Add a task", "add task ")]:
             shortcut = button(title, lambda checked=False, text=command: self.suggest_command(text))
             shortcut.setObjectName("link")
             suggestions.addWidget(shortcut)
         suggestions.addStretch()
         layout.addLayout(suggestions)
         self.stack.addWidget(page)
+
+    def set_music_volume(self):
+        self.assistant.submit(f"spotify volume {self.spotify_volume.value()}%")
 
     def build_tasks(self):
         page = QWidget()
@@ -806,6 +816,7 @@ class Window(QMainWindow):
 
     def speech_changed(self, speaking):
         self.speaking = bool(speaking)
+        self.hologram.set_speaking(self.speaking)
         if speaking:
             self.partial_label.hide()
         self.refresh_mode()
@@ -877,6 +888,7 @@ class Window(QMainWindow):
         if hasattr(self.speaker, "interrupt"):
             self.speaker.interrupt()
         self.speaking = False
+        self.hologram.set_speaking(False)
         self.preparing = False
         self.refresh_mode()
 
@@ -945,32 +957,10 @@ class Window(QMainWindow):
         else:
             self.showMinimized()
 
-    def update_stats(self):
+    def update_clock(self):
         now = datetime.datetime.now()
         self.clock_label.setText(now.strftime("%H:%M:%S"))
         self.date_label.setText(now.strftime("%A, %d %B %Y"))
-        cpu = psutil.cpu_percent()
-        memory = psutil.virtual_memory().percent
-        self.stat_labels["CPU"].setText(f"{cpu:.0f}%")
-        self.stat_labels["MEMORY"].setText(f"{memory:.0f}%")
-        self.stat_charts["CPU"].add_value(cpu)
-        self.stat_charts["MEMORY"].add_value(memory)
-
-    def poll_gpu(self):
-        if self.gpu_busy:
-            return
-        self.gpu_busy = True
-        def work():
-            value, name = gpu_usage()
-            self.telemetry.gpu.emit(value, name)
-        threading.Thread(target=work, daemon=True).start()
-
-    def gpu_updated(self, value, name):
-        self.gpu_busy = False
-        self.gpu_value = value
-        self.stat_labels["GPU"].setText("N/A" if value is None else f"{value:.0f}%")
-        self.stat_charts["GPU"].add_value(value)
-        self.stat_labels["GPU"].setToolTip(name)
 
     def quit(self):
         self.quitting = True

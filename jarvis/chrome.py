@@ -8,12 +8,14 @@ from __future__ import annotations
 import ctypes
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlencode
 
 import psutil
 
@@ -25,7 +27,7 @@ def _com_apartment():
     if not IS_WINDOWS:
         raise RuntimeError("Chrome desktop commands require Windows 10 or 11.")
     from winrt.runtime import ApartmentType, init_apartment, uninit_apartment
-    # Every public operation initializes its calling thread even if pywinauto
+    # Every dictation operation initializes its calling thread even if UIA
     # was imported previously on another thread. Own only this reference;
     # Spotify and the Assistant worker may hold their own MTA references.
     init_apartment(ApartmentType.MULTI_THREADED)
@@ -57,6 +59,62 @@ def _validated_text(value):
     except UnicodeEncodeError as error:
         raise ValueError("That search contains invalid Unicode text.") from error
     return value
+
+
+def _chrome_executable(apps):
+    """Find Chrome without importing UI Automation or WinRT components."""
+    with apps.lock:
+        entries = apps.entries.copy()
+    candidates = [target for name, target in entries.items()
+                  if name.lower() in {"chrome", "google chrome"}]
+    try:
+        import winreg
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            # Portable Python may use a different registry view from Chrome.
+            for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+                try:
+                    with winreg.OpenKey(hive, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe",
+                                        0, winreg.KEY_READ | view) as key:
+                        candidates.append(winreg.QueryValue(key, None))
+                except OSError:
+                    pass
+    except ImportError:
+        pass
+    for variable in ("LOCALAPPDATA", "PROGRAMW6432", "PROGRAMFILES", "PROGRAMFILES(X86)"):
+        base = os.getenv(variable)
+        if base:
+            candidates.append(str(Path(base) / "Google/Chrome/Application/chrome.exe"))
+    candidates.append(shutil.which("chrome.exe"))
+    # A running portable/custom installation can be absent from both the
+    # Start menu and App Paths registry. Inspect names and paths only.
+    for process in psutil.process_iter(["name", "exe"]):
+        try:
+            if (process.info.get("name") or "").lower() == "chrome.exe":
+                candidates.append(process.info.get("exe"))
+        except (psutil.Error, OSError):
+            continue
+    for candidate in candidates:
+        if not isinstance(candidate, str):
+            continue
+        path = Path(os.path.expandvars(candidate.strip().strip('"')))
+        if path.suffix.lower() == ".lnk" and path.is_file():
+            try:
+                target = powershell(
+                    "[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
+                    "$link=[Console]::In.ReadToEnd(); "
+                    "(New-Object -ComObject WScript.Shell).CreateShortcut($link).TargetPath",
+                    input_text=str(path), timeout=8)
+                # Shortcut arguments are deliberately excluded from actions.
+                path = Path(os.path.expandvars(target.strip().strip('"')))
+            except (OSError, RuntimeError, subprocess.TimeoutExpired):
+                continue
+        if path.name.lower() == "chrome.exe" and path.is_file():
+            return str(path)
+    raise RuntimeError("I couldn't find Google Chrome. Install it or add its app shortcut in Settings.")
+
+
+class _AddressBarUnavailable(RuntimeError):
+    """A temporary UIA read failure; never permission to submit unchecked text."""
 
 
 @dataclass(frozen=True)
@@ -133,51 +191,22 @@ class _NativeKeyboard:
 
 class _WindowsChrome:
     def __init__(self, apps):
+        # Load the actual automation stack here, where Chrome._ui can report
+        # missing/incompatible native components, rather than later in focus.
+        from .uia import Desktop
+        from comtypes import COMError
         self.apps = apps
+        self._desktop = Desktop
+        self._uia_errors = (COMError, _AddressBarUnavailable)
         self.keyboard = _NativeKeyboard()
 
     def _executable(self):
-        with self.apps.lock:
-            entries = self.apps.entries.copy()
-        candidates = [target for name, target in entries.items()
-                      if name.lower() in {"chrome", "google chrome"}]
-        try:
-            import winreg
-            for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
-                try:
-                    with winreg.OpenKey(hive, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe") as key:
-                        candidates.append(winreg.QueryValue(key, None))
-                except OSError:
-                    pass
-        except ImportError:
-            pass
-        for variable in ("LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"):
-            base = os.getenv(variable)
-            if base:
-                candidates.append(str(Path(base) / "Google/Chrome/Application/chrome.exe"))
-        for candidate in candidates:
-            if not isinstance(candidate, str):
-                continue
-            path = Path(candidate.strip('"'))
-            if path.suffix.lower() == ".lnk" and path.is_file():
-                try:
-                    target = powershell(
-                        "[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
-                        "$link=[Console]::In.ReadToEnd(); "
-                        "(New-Object -ComObject WScript.Shell).CreateShortcut($link).TargetPath",
-                        input_text=str(path), timeout=8)
-                    # Only its Chrome executable is used; shortcut arguments
-                    # cannot turn a search into an unrelated desktop action.
-                    path = Path(target.strip('"'))
-                except (OSError, RuntimeError, subprocess.TimeoutExpired):
-                    continue
-            if path.name.lower() == "chrome.exe" and path.is_file():
-                return str(path)
-        raise RuntimeError("I couldn't find Google Chrome. Install it or add its app shortcut in Settings.")
+        return _chrome_executable(self.apps)
 
     def _find_window(self):
-        from pywinauto import Desktop
-        windows = Desktop(backend="uia").windows(class_name="Chrome_WidgetWin_1", visible_only=True)
+        # The native adapter activates the actual HWND; merely calling UIA
+        # SetFocus doesn't establish ownership of global keyboard input.
+        windows = self._desktop(backend="uia").windows(class_name="Chrome_WidgetWin_1", visible_only=True)
         foreground = self.keyboard.user32.GetForegroundWindow()
         windows.sort(key=lambda window: window.handle != foreground)
         for window in windows:
@@ -190,11 +219,11 @@ class _WindowsChrome:
 
     @staticmethod
     def _focused_edit():
-        from pywinauto.uia_defines import IUIA
-        from pywinauto.uia_element_info import UIAElementInfo
-        from pywinauto.controls.uiawrapper import UIAWrapper
-        element = IUIA().iuia.GetFocusedElement()
-        return UIAWrapper(UIAElementInfo(element))
+        from .uia import focused_element
+        edit = focused_element()
+        if edit is None:
+            raise _AddressBarUnavailable("Chrome hasn't exposed the focused address bar yet.")
+        return edit
 
     @staticmethod
     def _identity(edit):
@@ -239,11 +268,16 @@ class _WindowsChrome:
 
     def _require_omnibox(self, token):
         self._require_window(token)
-        edit = self._focused_edit()
-        if (edit.element_info.process_id != token.process_id
-                or not self._is_omnibox(edit)
-                or self._identity(edit) != token.identity):
-            raise RuntimeError("Chrome's address bar lost focus. I haven't submitted anything.")
+        try:
+            edit = self._focused_edit()
+            if (edit.element_info.process_id != token.process_id
+                    or not self._is_omnibox(edit)
+                    or self._identity(edit) != token.identity):
+                raise RuntimeError("Chrome's address bar lost focus. I haven't submitted anything.")
+        except getattr(self, "_uia_errors", ()):
+            # Only native read failures are temporary. A different process,
+            # field, runtime ID, or foreground window fails immediately.
+            raise _AddressBarUnavailable("Chrome's address-bar accessibility information isn't ready yet.")
         return edit
 
     def focus(self):
@@ -259,13 +293,23 @@ class _WindowsChrome:
             raise RuntimeError("Chrome did not open a desktop window. Open it and try again.")
         window.set_focus()
         token = _Omnibox(window.process_id(), window.handle, ())
+        deadline = time.monotonic() + 1.5
+        while self.keyboard.user32.GetForegroundWindow() != token.handle:
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Chrome couldn't become the active window. Click Chrome, then try again.")
+            time.sleep(.05)
         self.keyboard.hotkey([0x11, 0x4C], lambda: self._require_window(token))  # Ctrl+L
-        deadline = time.monotonic() + 1
+        deadline = time.monotonic() + 1.5
         while time.monotonic() < deadline:
             self._require_window(token)
-            edit = self._focused_edit()
-            if edit.element_info.process_id == token.process_id and self._is_omnibox(edit):
-                return _Omnibox(token.process_id, token.handle, self._identity(edit))
+            try:
+                edit = self._focused_edit()
+                if edit.element_info.process_id == token.process_id and self._is_omnibox(edit):
+                    return _Omnibox(token.process_id, token.handle, self._identity(edit))
+            except self._uia_errors:
+                # Ctrl+L and Chrome's accessibility update are asynchronous.
+                # This retry sends no keys and never restores lost focus.
+                pass
             time.sleep(.05)
         raise RuntimeError("I couldn't identify Chrome's address bar. Open a normal Chrome window and try again.")
 
@@ -280,7 +324,7 @@ class _WindowsChrome:
         try:
             return edit.iface_value.CurrentValue
         except Exception as error:
-            raise RuntimeError("Chrome did not expose its address-bar text. I haven't submitted it.") from error
+            raise _AddressBarUnavailable("Chrome did not expose its address-bar text. I haven't submitted it.") from error
 
     def submit(self, token):
         def guard():
@@ -306,9 +350,21 @@ class Chrome:
         if self._backend is None:
             try:
                 self._backend = _WindowsChrome(self.apps)
-            except ImportError as error:
-                raise RuntimeError("Chrome automation isn't installed. Install the latest JARVIS Windows release.") from error
+            except (ImportError, OSError) as error:
+                raise RuntimeError(f"Chrome dictation couldn't load its Windows automation components: {error}. "
+                                   "Install the updated JARVIS release. Direct Chrome searches still work.") from error
         return self._backend
+
+    @staticmethod
+    def _read_ready(ui, token):
+        deadline = time.monotonic() + 1.2
+        while True:
+            try:
+                return ui.read(token)
+            except _AddressBarUnavailable:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(.04)
 
     @staticmethod
     def _wait_for_text(ui, token, expected):
@@ -317,8 +373,12 @@ class Chrome:
         # read(), then fail without Enter if the exact text never appears.
         deadline = time.monotonic() + 1.2
         while True:
-            if ui.read(token) in expected:
-                return
+            try:
+                if ui.read(token) in expected:
+                    return
+            except _AddressBarUnavailable:
+                # Retry unavailable Value patterns, never focus/identity loss.
+                pass
             if time.monotonic() >= deadline:
                 raise RuntimeError("Chrome did not receive the complete text. I haven't submitted anything.")
             time.sleep(.04)
@@ -337,15 +397,23 @@ class Chrome:
 
     def search(self, query):
         with self._lock:
-            self._pending = None
+            pending, self._pending = self._pending, None
             query = _validated_text(query)
-            with _com_apartment():
-                ui = self._ui()
-                token = ui.focus()
-                ui.write(token, "? " + query)
-                # Chrome consumes '?' as its search-mode marker on some versions.
-                self._wait_for_text(ui, token, {"? " + query, query})
-                ui.submit(token)
+            if pending is not None and pending[1] == query:
+                # A follow-up "search up <what I just dictated>" must use the
+                # same, unchanged address bar. Refocusing here would conceal
+                # a tab/window switch or overwrite text the user has edited.
+                return self._submit_pending(pending)
+            if not IS_WINDOWS:
+                raise RuntimeError("Chrome desktop commands require Windows 10 or 11.")
+            # A standalone search is a URL launch, not desktop dictation. This
+            # works even when Chrome's accessibility/native components fail to
+            # load, without sending global keystrokes to another application.
+            url = "https://www.google.com/search?" + urlencode({"q": query})
+            try:
+                subprocess.Popen([_chrome_executable(self.apps), url], creationflags=NO_WINDOW)
+            except OSError as error:
+                raise RuntimeError("I couldn't launch Google Chrome. Check its App shortcut in Settings and try again.") from error
         return f"Searching Chrome for {query}, boss."
 
     def submit_search(self):
@@ -353,14 +421,20 @@ class Chrome:
             pending, self._pending = self._pending, None
             if pending is None:
                 raise RuntimeError("Tell me what to type in Chrome first, then say search that.")
-            token, text = pending
-            with _com_apartment():
-                ui = self._ui()
-                if ui.read(token) != text:
-                    raise RuntimeError("Chrome's search text changed. Dictate it again before searching.")
-                # Submit only the saved, still-focused omnibox text, as a search;
-                # URLs and text cannot become navigation or JavaScript commands.
-                ui.write(token, "? " + text)
-                self._wait_for_text(ui, token, {"? " + text, text})
-                ui.submit(token)
+            return self._submit_pending(pending)
+
+    def _submit_pending(self, pending):
+        # The caller holds _lock and consumes the pending command before any
+        # desktop operation, so a failed or repeated submit cannot be retried
+        # on a different field accidentally.
+        token, text = pending
+        with _com_apartment():
+            ui = self._ui()
+            if self._read_ready(ui, token) != text:
+                raise RuntimeError("Chrome's search text changed. Dictate it again before searching.")
+            # Submit only the saved, still-focused omnibox text, as a search;
+            # URLs and text cannot become navigation or JavaScript commands.
+            ui.write(token, "? " + text)
+            self._wait_for_text(ui, token, {"? " + text, text})
+            ui.submit(token)
         return f"Searching Chrome for {text}, boss."

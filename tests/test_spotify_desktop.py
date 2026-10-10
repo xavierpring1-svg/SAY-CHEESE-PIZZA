@@ -4,8 +4,8 @@ from types import SimpleNamespace
 import pytest
 
 from jarvis.spotify_desktop import (
-    PlaybackState, SongPlayback, SongResult, WindowsSpotifyUI, _requested_song,
-    read_windows_playback,
+    PlaybackState, SongPlayback, SongResult, SpotifyTransport, WindowsSpotifyUI, _requested_song,
+    read_session_playback, read_windows_playback,
 )
 
 
@@ -350,3 +350,345 @@ def test_play_is_invoked_once_on_selected_window_control(monkeypatch):
     window = Element(children=[Element(children=[Element("Song", "Text"), play])])
     ui_for(window).invoke_song(SongResult("Home", "Artist", button=play))
     assert play.invocations == 1
+
+
+class TransportSession:
+    def __init__(self, accepted=True, seek_enabled=True):
+        self.calls = []
+        self.accepted = accepted
+        self.seek_enabled = seek_enabled
+
+    async def try_skip_next_async(self):
+        self.calls.append("next")
+        return self.accepted
+
+    async def try_skip_previous_async(self):
+        self.calls.append("previous")
+        return self.accepted
+
+    async def try_change_playback_position_async(self, ticks):
+        self.calls.append(("seek", ticks))
+        return self.accepted
+
+    async def try_play_async(self):
+        self.calls.append("play")
+        return self.accepted
+
+    def get_playback_info(self):
+        return SimpleNamespace(controls=SimpleNamespace(is_playback_position_enabled=self.seek_enabled))
+
+
+def transport(states, **kwargs):
+    session, clock = TransportSession(), Clock()
+    iterator, last = iter(states), None
+
+    async def read(expected_session):
+        assert expected_session is session
+        nonlocal last
+        last = next(iterator, last)
+        return last
+
+    controller = SpotifyTransport(session, read, clock=clock, sleep=clock.sleep,
+                                  timeout=1, **kwargs)
+    return controller, session, clock
+
+
+def test_next_waits_for_track_change_in_the_targeted_spotify_session():
+    old = PlaybackState("Spotify.exe", "Old Song", "Artist", True, 30)
+    new = PlaybackState("Spotify.exe", "New Song", "Artist", True, 0)
+    controller, session, clock = transport([old, None, old, new])
+    assert asyncio.run(controller.control("next")) == "Skipped to New Song by Artist."
+    assert session.calls == ["next"]
+    assert clock.now > 0
+
+
+def test_previous_can_restart_the_current_song_as_spotify_normally_does():
+    controller, session, _ = transport([
+        PlaybackState("Spotify.exe", "Song", "Artist", True, 30),
+        PlaybackState("Spotify.exe", "Song", "Artist", True, 0.3),
+    ])
+    assert asyncio.run(controller.control("previous")) == "Restarted Song by Artist."
+    assert session.calls == ["previous"]
+
+
+def test_previous_track_change_can_be_verified_while_paused():
+    controller, session, _ = transport([
+        PlaybackState("Spotify.exe", "Second", "Artist", False),
+        PlaybackState("Spotify.exe", "First", "Artist", False),
+    ])
+    assert asyncio.run(controller.control("previous")) == "Returned to First by Artist (paused)."
+    assert session.calls == ["previous"]
+
+
+@pytest.mark.parametrize("action", ["next", "previous", "replay"])
+def test_rejected_transport_operation_never_claims_success(action):
+    controller, session, _ = transport([PlaybackState("Spotify.exe", "Song", "Artist", True, 30)])
+    session.accepted = False
+    with pytest.raises(RuntimeError, match="declined"):
+        asyncio.run(controller.control(action))
+    assert len(session.calls) == 1
+
+
+@pytest.mark.parametrize("action", ["next", "previous", "replay"])
+def test_accepted_command_with_unchanged_state_is_not_reported_as_success(action):
+    controller, session, clock = transport([PlaybackState("Spotify.exe", "Song", "Artist", True, 30)])
+    with pytest.raises(RuntimeError, match="couldn't confirm"):
+        asyncio.run(controller.control(action))
+    assert clock.now == pytest.approx(1)
+    assert session.calls
+
+
+def test_replay_seeks_the_timeline_start_and_confirms_same_song_is_playing():
+    old = PlaybackState("Spotify.exe", "Song", "Artist", False, 45, 5)
+    controller, session, _ = transport([
+        old, old, PlaybackState("Spotify.exe", "Song", "Artist", True, 5.2, 5),
+    ])
+    assert asyncio.run(controller.control("replay")) == "Replaying Song by Artist, boss."
+    assert session.calls == [("seek", 50_000_000), "play"]
+
+
+@pytest.mark.parametrize("state", [
+    PlaybackState("Spotify.exe", "Wrong Song", "Artist", True, 0),
+    PlaybackState("Spotify.exe", "Song", "Wrong Artist", True, 0),
+    PlaybackState("Spotify.exe", "Song", "Artist", False, 0),
+    PlaybackState("not-spotify.exe", "Song", "Artist", True, 0),
+])
+def test_replay_requires_same_spotify_song_at_start_and_playing(state):
+    controller, _, _ = transport([PlaybackState("Spotify.exe", "Song", "Artist", True, 30), state])
+    with pytest.raises(RuntimeError, match="couldn't confirm"):
+        asyncio.run(controller.control("replay"))
+
+
+@pytest.mark.parametrize("action", ["next", "previous", "replay"])
+def test_initial_untrusted_session_prevents_transport_commands(action):
+    controller, session, _ = transport([PlaybackState("not-spotify.exe", "Song", "Artist", True, 30)])
+    with pytest.raises(RuntimeError, match="couldn't read"):
+        asyncio.run(controller.control(action))
+    assert not session.calls
+
+
+@pytest.mark.parametrize("action", ["next", "previous", "replay"])
+def test_cancelled_transport_never_touches_spotify(action):
+    controller, session, _ = transport([], cancelled=lambda: True)
+    with pytest.raises(RuntimeError, match="cancelled"):
+        asyncio.run(controller.control(action))
+    assert not session.calls
+
+
+def test_replay_does_not_replace_seek_with_previous_track_if_seek_is_unavailable():
+    controller, session, _ = transport([PlaybackState("Spotify.exe", "Song", "Artist", True, 30)])
+    session.seek_enabled = False
+    with pytest.raises(RuntimeError, match="doesn't allow replay"):
+        asyncio.run(controller.control("replay"))
+    assert not session.calls
+
+    controller, session, _ = transport([PlaybackState("Spotify.exe", "Song", "Artist", True)])
+    with pytest.raises(RuntimeError, match="seek position"):
+        asyncio.run(controller.control("replay"))
+    assert not session.calls
+
+
+def test_session_reader_converts_winrt_timedelta_positions_to_seconds(monkeypatch):
+    import sys
+    from datetime import timedelta
+    from types import ModuleType
+
+    playing = object()
+    module = ModuleType("winrt.windows.media.control")
+    module.GlobalSystemMediaTransportControlsSessionPlaybackStatus = SimpleNamespace(PLAYING=playing)
+    monkeypatch.setitem(sys.modules, "winrt.windows.media.control", module)
+
+    async def properties():
+        return SimpleNamespace(title="Song", artist="Artist")
+
+    session = SimpleNamespace(
+        source_app_user_model_id="Spotify.exe",
+        try_get_media_properties_async=properties,
+        get_playback_info=lambda: SimpleNamespace(playback_status=playing),
+        get_timeline_properties=lambda: SimpleNamespace(position=timedelta(seconds=45.5),
+                                                        start_time=timedelta(seconds=5)),
+    )
+    assert asyncio.run(read_session_playback(session)) == PlaybackState(
+        "Spotify.exe", "Song", "Artist", True, 45.5, 5)
+
+
+@pytest.mark.parametrize("dependency", ["comtypes", "_ctypes", "jarvis.uia"])
+def test_native_uia_dependency_import_error_is_identified(monkeypatch, dependency):
+    import builtins
+    import jarvis.spotify_desktop as module
+
+    original_import = builtins.__import__
+    error = ModuleNotFoundError(f"No module named '{dependency}'", name=dependency)
+
+    def import_module(name, *args, **kwargs):
+        if name == "uia":
+            raise error
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(module.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(builtins, "__import__", import_module)
+    with pytest.raises(RuntimeError, match=dependency) as failure:
+        WindowsSpotifyUI()
+    assert "needs the pywinauto" not in str(failure.value)
+    assert failure.value.__cause__ is error
+
+
+def test_native_uia_import_failure_preserves_actual_dependency_message(monkeypatch):
+    import builtins
+    import jarvis.spotify_desktop as module
+
+    original_import = builtins.__import__
+    error = ImportError("DLL load failed while importing _ctypes: The specified module could not be found.")
+
+    def import_module(name, *args, **kwargs):
+        if name == "uia":
+            raise error
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(module.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(builtins, "__import__", import_module)
+    with pytest.raises(RuntimeError, match="DLL load failed while importing _ctypes") as failure:
+        WindowsSpotifyUI()
+    assert failure.value.__cause__ is error
+
+
+def test_native_uia_initialization_failure_is_identified(monkeypatch):
+    import sys
+    import jarvis.spotify_desktop as module
+    from types import ModuleType
+
+    def desktop(**kwargs):
+        raise OSError("UI Automation COM interface unavailable")
+
+    uia = ModuleType("jarvis.uia")
+    uia.Desktop = desktop
+    monkeypatch.setitem(sys.modules, "jarvis.uia", uia)
+    monkeypatch.setattr(module.platform, "system", lambda: "Windows")
+    with pytest.raises(RuntimeError, match="couldn't initialize: UI Automation COM interface unavailable"):
+        WindowsSpotifyUI()
+
+
+def track_row(title="Hello", artist="Adele", album="25", *, button=None):
+    name = Element(title, "Text", class_name="main-trackList-rowTitle")
+    performer = Element(artist, "Hyperlink")
+    column = Element(children=[name, performer])
+    row = Element(children=[column, Element(children=[Element(album, "Hyperlink")])],
+                  control_type="DataItem", class_name="main-trackList-trackListRow")
+    if button is not None:
+        button._parent = row
+        row.children.append(button)
+    return row, name, performer
+
+
+def test_track_row_without_play_button_is_matched_and_targeted_natively(monkeypatch):
+    foreground(monkeypatch)
+    row, _, _ = track_row()
+    window = Element(children=[row])
+    ui = ui_for(window)
+    song = ui.find_song("Hello by Adele")
+    assert song is not None
+    assert (song.title, song.artist) == ("Hello", "Adele")
+    assert song.button is None and song.row is row
+    ui.invoke_song(song)
+    assert row.invocations == 1
+
+
+def test_track_row_with_play_button_hidden_until_hover_still_has_targeted_action(monkeypatch):
+    foreground(monkeypatch)
+    button = Element("Play Hello by Adele", "Button")
+    button.is_visible = lambda: False
+    row, _, _ = track_row(button=button)
+    window = Element(children=[row])
+    ui = ui_for(window)
+    song = ui.find_song("Hello by Adele")
+    assert song.row is row
+    ui.invoke_song(song)
+    assert row.invocations == 1
+    assert not button.invocations
+
+
+def test_title_artist_cell_is_supported_without_title_css_class(monkeypatch):
+    row, title, _ = track_row()
+    title.element_info.class_name = ""
+    window = Element(children=[row])
+    song = ui_for(window).find_song("Hello by Adele")
+    assert song is not None and song.row is row
+
+
+@pytest.mark.parametrize("query", ["25", "Adele", "Hello by 25", "Hello by Other Artist"])
+def test_row_artist_or_album_cells_are_not_guessed_as_requested_song(query):
+    row, _, _ = track_row()
+    window = Element(children=[row])
+    assert ui_for(window).find_song(query) is None
+    assert not row.invocations
+
+
+def test_unclassified_result_card_is_not_activated_as_a_track():
+    card, _, _ = track_row()
+    card.element_info.class_name = "album-result"
+    window = Element(children=[card])
+    assert ui_for(window).find_song("Hello by Adele") is None
+    assert not card.invocations
+
+
+def test_none_uia_automation_id_does_not_discard_valid_track_row():
+    button = Element("Play Hello by Adele", "Button")
+    row, _, _ = track_row(button=button)
+    row.element_info.automation_id = None
+    window = Element(children=[row])
+    song = ui_for(window).find_song("Hello by Adele")
+    assert song is not None and song.button is button
+
+
+@pytest.mark.parametrize("changed", ["title", "artist"])
+def test_recycled_track_row_is_revalidated_before_native_action(monkeypatch, changed):
+    foreground(monkeypatch)
+    row, title, artist = track_row()
+    ui = ui_for(Element(children=[row]))
+    song = ui.find_song("Hello by Adele")
+    (title if changed == "title" else artist).name = "Different"
+    with pytest.raises(RuntimeError, match="selected song or artist changed"):
+        ui.invoke_song(song)
+    assert not row.invocations
+
+
+def test_track_row_focus_loss_prevents_action(monkeypatch):
+    foreground(monkeypatch, process=999)
+    row, _, _ = track_row()
+    ui = ui_for(Element(children=[row]))
+    song = ui.find_song("Hello by Adele")
+    with pytest.raises(RuntimeError, match="take focus"):
+        ui.invoke_song(song)
+    assert not row.invocations
+
+
+def test_track_row_without_supported_native_pattern_reports_precise_failure(monkeypatch):
+    foreground(monkeypatch)
+    row, _, _ = track_row()
+    ui = ui_for(Element(children=[row]))
+    song = ui.find_song("Hello by Adele")
+
+    def unsupported():
+        raise RuntimeError("No supported UIA action")
+
+    row.invoke = unsupported
+    with pytest.raises(RuntimeError, match="doesn't expose a supported playback action"):
+        ui.invoke_song(song)
+
+
+def test_row_default_action_that_only_selects_never_claims_song_playback(monkeypatch):
+    foreground(monkeypatch)
+    row, _, _ = track_row()
+    ui = ui_for(Element(children=[row]))
+    ui.open_search = lambda query: None
+    clock = Clock()
+
+    async def read():
+        return PlaybackState("Spotify.exe", "Previous Song", "Other Artist", True)
+
+    player = SongPlayback(ui, read, clock=clock, sleep=clock.sleep,
+                          search_timeout=1, playback_timeout=1)
+    with pytest.raises(RuntimeError, match="couldn't confirm it is playing"):
+        asyncio.run(player.play_song("Hello by Adele"))
+    assert row.invocations == 1
+    assert clock.now == pytest.approx(1)

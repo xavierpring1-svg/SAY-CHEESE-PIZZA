@@ -119,14 +119,19 @@ class Apps:
 class Spotify:
     """Control the Spotify Windows media session, without a subscription API."""
     async def _session(self):
+        from .spotify_desktop import _spotify_source
         from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
         manager = await GlobalSystemMediaTransportControlsSessionManager.request_async()
         for session in manager.get_sessions():
-            if "spotify" in session.source_app_user_model_id.lower():
+            if _spotify_source(session.source_app_user_model_id):
                 return session
         return None
 
-    async def _control(self, action, uri=""):
+    async def _control(self, action, uri="", *, cancelled=None):
+        if action not in {"play", "pause", "next", "previous", "replay"}:
+            raise ValueError("Use play, pause, next, previous, or replay for Spotify.")
+        if cancelled and cancelled():
+            raise RuntimeError("Spotify playback request cancelled.")
         if action == "play":
             if uri:
                 os.startfile(uri)
@@ -140,21 +145,22 @@ class Spotify:
             await asyncio.sleep(0.5)
         if not session:
             raise RuntimeError("Spotify isn't exposing a media session. Open Spotify, sign in, and play a song once, then try again.")
-        operation = {"play": session.try_play_async, "pause": session.try_pause_async,
-                     "next": session.try_skip_next_async, "previous": session.try_skip_previous_async}[action]
+        if action in {"next", "previous", "replay"}:
+            from .spotify_desktop import SpotifyTransport
+            return await SpotifyTransport(session, cancelled=cancelled).control(action)
+        operation = session.try_play_async if action == "play" else session.try_pause_async
         if not await operation():
             raise RuntimeError("Spotify declined that playback command. Check its current playback state.")
-        labels = {"play": "Playing Spotify, boss.", "pause": "Spotify paused.",
-                  "next": "Skipping to the next track.", "previous": "Returning to the previous track."}
+        labels = {"play": "Playing Spotify, boss.", "pause": "Spotify paused."}
         return labels[action]
 
-    def control(self, action, uri=""):
+    def control(self, action, uri="", *, cancelled=None):
         if not IS_WINDOWS:
             raise RuntimeError("Spotify desktop controls require Windows.")
         from winrt.runtime import init_apartment, uninit_apartment, ApartmentType
         init_apartment(ApartmentType.MULTI_THREADED)
         try:
-            return asyncio.run(self._control(action, uri))
+            return asyncio.run(self._control(action, uri, cancelled=cancelled))
         finally:
             uninit_apartment()
 
@@ -167,6 +173,94 @@ class Spotify:
     def play(self, query, *, cancelled=None):
         from .spotify_desktop import play_song
         return play_song(query, cancelled=cancelled)
+
+    def set_volume(self, percent):
+        """Set Spotify's Windows mixer sessions, including nondefault outputs."""
+        try:
+            value = int(percent)
+        except (TypeError, ValueError):
+            raise ValueError("Use a Spotify volume from 0 to 100 percent.") from None
+        if not 0 <= value <= 100:
+            raise ValueError("Use a Spotify volume from 0 to 100 percent.")
+        return _spotify_audio("set", value)
+
+    def adjust_volume(self, action):
+        if action not in {"volume up", "volume down", "mute", "unmute"}:
+            raise ValueError("Use volume up, volume down, mute, or unmute for Spotify audio.")
+        return _spotify_audio(action)
+
+
+def _spotify_audio_controls():
+    """Enumerate active render devices; Spotify can use a separate output."""
+    import psutil
+    from pycaw.pycaw import AudioUtilities
+    from pycaw.utils import AudioSession
+    from pycaw.api.audiopolicy import IAudioSessionControl2
+    from pycaw.constants import DEVICE_STATE, EDataFlow
+
+    controls = []
+    for device in AudioUtilities.GetAllDevices(data_flow=EDataFlow.eRender.value,
+                                               device_state=DEVICE_STATE.ACTIVE.value):
+        enumerator = device.AudioSessionManager.GetSessionEnumerator()
+        for index in range(enumerator.GetCount()):
+            raw = enumerator.GetSession(index)
+            if raw is None:
+                continue
+            session = AudioSession(raw.QueryInterface(IAudioSessionControl2))
+            try:
+                process = session.Process
+                if (session.State != 2 and process is not None
+                        and process.name().casefold() == "spotify.exe"):
+                    controls.append(session.SimpleAudioVolume)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    return controls
+
+
+def _spotify_audio(action, percent=None):
+    if not IS_WINDOWS:
+        raise RuntimeError("Spotify app volume requires Windows and its desktop client.")
+    import comtypes
+
+    comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
+    try:
+        controls = _spotify_audio_controls()
+        if not controls:
+            raise RuntimeError("Spotify has no active Windows audio session. Play a song in Spotify, then try again.")
+        if action in {"mute", "unmute"}:
+            muted = action == "mute"
+            for control in controls:
+                control.SetMute(int(muted), None)
+            if any(bool(control.GetMute()) != muted for control in controls):
+                raise RuntimeError("Windows didn't confirm Spotify's mute setting. Check the app volume mixer.")
+            return "Spotify muted." if muted else "Spotify unmuted."
+        targets = []
+        for control in controls:
+            if action == "set":
+                target = percent / 100
+            else:
+                delta = 0.1 if action == "volume up" else -0.1
+                target = max(0.0, min(1.0, control.GetMasterVolume() + delta))
+            control.SetMasterVolume(target, None)
+            targets.append(target)
+        if any(abs(control.GetMasterVolume() - target) > 0.005
+               for control, target in zip(controls, targets)):
+            raise RuntimeError("Windows didn't confirm Spotify's volume setting. Check the app volume mixer.")
+        # A positive set/increase also restores a previously muted app session.
+        # Lowering the volume preserves the user's mute state.
+        if action in {"set", "volume up"}:
+            for control, target in zip(controls, targets):
+                if target > 0:
+                    control.SetMute(0, None)
+                    if control.GetMute():
+                        raise RuntimeError("Spotify's volume changed, but Windows couldn't unmute its audio session.")
+        if max(targets) - min(targets) < 0.005:
+            return f"Spotify volume set to {round(targets[0] * 100)} percent."
+        return "Spotify volume increased." if action == "volume up" else "Spotify volume decreased."
+    except (ImportError, OSError) as error:
+        raise RuntimeError("Windows couldn't access Spotify's app volume. Restart Spotify and try again.") from error
+    finally:
+        comtypes.CoUninitialize()
 
 
 def media_key(action):

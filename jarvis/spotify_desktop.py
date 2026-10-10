@@ -48,6 +48,7 @@ class SongResult:
     title: str
     artist: str = ""
     button: Any = field(default=None, repr=False, compare=False)
+    row: Any = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -56,30 +57,148 @@ class PlaybackState:
     title: str
     artist: str
     playing: bool
+    position: float | None = None
+    start: float = 0.0
+
+
+async def read_session_playback(session) -> PlaybackState | None:
+    """Read metadata and seek position from one already identified session."""
+    from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionPlaybackStatus
+
+    properties = await session.try_get_media_properties_async()
+    if properties is None:
+        return None
+    info = session.get_playback_info()
+    if info is None:
+        return None
+    position, start = None, 0.0
+    try:
+        timeline = session.get_timeline_properties()
+        position = timeline.position.total_seconds()
+        start = timeline.start_time.total_seconds()
+    except (AttributeError, OSError, RuntimeError):
+        # Metadata still supports song and skip verification when this client
+        # does not publish its timeline. Replay requires a readable position.
+        pass
+    return PlaybackState(
+        session.source_app_user_model_id, properties.title or "", properties.artist or "",
+        info.playback_status == GlobalSystemMediaTransportControlsSessionPlaybackStatus.PLAYING,
+        position, start,
+    )
 
 
 async def read_windows_playback() -> PlaybackState | None:
-    from winrt.windows.media.control import (
-        GlobalSystemMediaTransportControlsSessionManager,
-        GlobalSystemMediaTransportControlsSessionPlaybackStatus,
-    )
+    from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
 
     manager = await GlobalSystemMediaTransportControlsSessionManager.request_async()
     for session in manager.get_sessions():
         source = session.source_app_user_model_id
         if not _spotify_source(source):
             continue
-        properties = await session.try_get_media_properties_async()
+        state = await read_session_playback(session)
         # WinRT returns None while the client is switching tracks or starting.
         # Let the bounded verification loop retry that transitional state.
-        if properties is None:
+        if state is None:
             continue
-        info = session.get_playback_info()
-        return PlaybackState(
-            source, properties.title or "", properties.artist or "",
-            info.playback_status == GlobalSystemMediaTransportControlsSessionPlaybackStatus.PLAYING,
-        )
+        return state
     return None
+
+
+class SpotifyTransport:
+    """Skip/replay a specific Spotify session, then observe the result."""
+
+    def __init__(self, session, read_playback=None, *,
+                 cancelled: Callable[[], bool] | None = None,
+                 clock: Callable[[], float] = time.monotonic,
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+                 timeout: float = 6):
+        self.session = session
+        self.read_playback = read_playback or read_session_playback
+        self.cancelled = cancelled or (lambda: False)
+        self.clock, self.sleep, self.timeout = clock, sleep, timeout
+
+    def _check_cancelled(self):
+        if self.cancelled():
+            raise RuntimeError("Spotify playback request cancelled.")
+
+    async def _read(self, deadline):
+        self._check_cancelled()
+        try:
+            return await asyncio.wait_for(self.read_playback(self.session),
+                                          timeout=min(1.5, max(0.01, deadline - self.clock())))
+        except (OSError, RuntimeError, asyncio.TimeoutError):
+            return None
+
+    async def _operate(self, operation):
+        self._check_cancelled()
+        try:
+            return await asyncio.wait_for(operation(), timeout=self.timeout)
+        except asyncio.TimeoutError:
+            raise RuntimeError("Spotify didn't respond to the playback command. Check Spotify and try again.") from None
+
+    @staticmethod
+    def _same_track(first, second):
+        return (_normalise(first.title) == _normalise(second.title)
+                and _normalise(first.artist) == _normalise(second.artist))
+
+    @staticmethod
+    def _valid(state):
+        return bool(state and _spotify_source(state.source) and state.title.strip())
+
+    async def control(self, action: str) -> str:
+        if action not in {"next", "previous", "replay"}:
+            raise ValueError("Use next, previous, or replay for Spotify playback.")
+        deadline = self.clock() + self.timeout
+        initial = None
+        while self.clock() < deadline:
+            initial = await self._read(deadline)
+            if self._valid(initial):
+                break
+            await self.sleep(min(0.2, max(0, deadline - self.clock())))
+        if not self._valid(initial):
+            raise RuntimeError("I couldn't read Spotify's current track. Play a song in Spotify and try again.")
+        self._check_cancelled()
+        if action == "replay":
+            if initial.position is None:
+                raise RuntimeError("Spotify isn't exposing a seek position, so I can't safely replay this track.")
+            info = self.session.get_playback_info()
+            controls = getattr(info, "controls", None)
+            if controls is not None and not controls.is_playback_position_enabled:
+                raise RuntimeError("Spotify doesn't allow replay of the current item. Wait for any advert to finish.")
+            # WinRT positions use 100 ns ticks, relative to the session's
+            # timeline; previous-track is never used as a replay shortcut.
+            if not await self._operate(lambda: self.session.try_change_playback_position_async(
+                    round(initial.start * 10_000_000))):
+                raise RuntimeError("Spotify declined the replay command. Check the current song or advert.")
+            self._check_cancelled()
+            if not await self._operate(self.session.try_play_async):
+                raise RuntimeError("Spotify sought to the beginning but declined playback. Check Spotify.")
+        else:
+            operation = (self.session.try_skip_next_async if action == "next"
+                         else self.session.try_skip_previous_async)
+            if not await self._operate(operation):
+                raise RuntimeError("Spotify declined that playback command. Check its current playback state.")
+        deadline = self.clock() + self.timeout
+        while self.clock() < deadline:
+            state = await self._read(deadline)
+            if self._valid(state) and state.source.casefold() == initial.source.casefold():
+                same = self._same_track(initial, state)
+                at_start = (state.position is not None
+                            and state.start <= state.position <= state.start + 2)
+                restarted = (at_start and initial.position is not None
+                             and initial.position > initial.start + 2)
+                artist = f" by {state.artist}" if state.artist else ""
+                if action == "replay" and same and at_start and state.playing:
+                    return f"Replaying {state.title}{artist}, boss."
+                if action != "replay" and (not same or restarted):
+                    if same:
+                        verb = "Restarted" if action == "previous" else "Skipped to"
+                    else:
+                        verb = "Skipped to" if action == "next" else "Returned to"
+                    paused = " (paused)" if not state.playing else ""
+                    return f"{verb} {state.title}{artist}{paused}."
+            await self.sleep(min(0.2, max(0, deadline - self.clock())))
+        raise RuntimeError("Spotify accepted the command, but I couldn't confirm the playback change. Check Spotify and try again.")
 
 
 class WindowsSpotifyUI:
@@ -92,11 +211,26 @@ class WindowsSpotifyUI:
         if platform.system() != "Windows":
             raise RuntimeError("Song-name playback requires the Windows Spotify desktop client.")
         try:
-            from pywinauto import Desktop
-        except ImportError:
-            raise RuntimeError("Spotify song selection needs the pywinauto Windows component. Install the updated JARVIS release.") from None
-        self.desktop = Desktop(backend="uia")
+            from .uia import Desktop
+            self.desktop = Desktop(backend="uia")
+        except ImportError as error:
+            detail = " ".join(str(error).split())[:220]
+            raise RuntimeError(f"Spotify's Windows automation couldn't load a required component: {detail}. Re-extract the complete JARVIS folder and run it from there.") from error
+        except (OSError, RuntimeError) as error:
+            detail = " ".join(str(error).split())[:220]
+            raise RuntimeError(f"Spotify's Windows automation couldn't initialize: {detail}.") from error
         self.window = None
+
+    @staticmethod
+    def _marker(element):
+        info = element.element_info
+        return ((getattr(info, "class_name", "") or "") + " "
+                + (getattr(info, "automation_id", "") or "")).casefold()
+
+    @classmethod
+    def _track_row(cls, element):
+        marker = cls._marker(element)
+        return "tracklistrow" in marker or "track-list-row" in marker
 
     def open_search(self, query: str):
         # A deep link encodes Unicode as data and cannot type into another app.
@@ -131,11 +265,8 @@ class WindowsSpotifyUI:
                 scope = scope.parent()
                 if scope is None or scope == self.window:
                     return None
-                info = scope.element_info
-                marker = (getattr(info, "class_name", "") + " "
-                          + getattr(info, "automation_id", "")).casefold()
                 # Spotify's track rows have a stable semantic class when exposed.
-                if "tracklistrow" in marker or "track-list-row" in marker:
+                if self._track_row(scope):
                     return scope
                 descendants = scope.descendants()
                 # A whole screen containing both album and song results is not
@@ -183,6 +314,60 @@ class WindowsSpotifyUI:
                          if re.match(r"^play(?:\s|$)", element.window_text().strip(), re.I)]
         return len(play_controls) == 1
 
+    @staticmethod
+    def _row_column(row, element):
+        """Keep the artist in the title's column, excluding the album column."""
+        current = element
+        for _ in range(20):
+            parent = current.parent()
+            if parent is None:
+                return None
+            if parent == row:
+                return current
+            current = parent
+        return None
+
+    @staticmethod
+    def _row_texts(scope):
+        result = []
+        for element in scope.descendants():
+            if element.element_info.control_type not in {"Text", "Hyperlink"}:
+                continue
+            value = element.window_text().strip()
+            if value and _normalise(value) not in {_normalise(text) for text, _ in result}:
+                result.append((value, element))
+        return result
+
+    def _row_song(self, row, query):
+        if not self._track_row(row) or not row.is_visible() or not row.is_enabled():
+            return None
+        texts = self._row_texts(row)
+        # Chromium exposes Spotify's DOM class through UIA ClassName. Prefer
+        # the semantic title; never treat an album or artist link as a title.
+        titles = [(text, element) for text, element in texts
+                  if "tracklist-rowtitle" in self._marker(element)]
+        if not titles:
+            for text, element in texts:
+                column = self._row_column(row, element)
+                if column is None or column == element:
+                    continue
+                column_texts = self._row_texts(column)
+                # A title/artist cell has both, whereas the separate album
+                # cell exposes one name. Its first text is the song title.
+                if len(column_texts) >= 2 and column_texts[0][1] == element:
+                    titles.append((text, element))
+        for title, element in titles:
+            column = self._row_column(row, element)
+            artist_texts = self._row_texts(column) if column is not None and column != element else []
+            artists = [text for text, _ in artist_texts if _normalise(text) != _normalise(title)
+                       and not re.fullmatch(r"\d+(?::\d{2})?", text)]
+            for artist in artists:
+                if _requested_song(query, title, artist):
+                    return SongResult(title, artist, row=row)
+            if _requested_song(query, title):
+                return SongResult(title, row=row)
+        return None
+
     def find_song(self, query: str) -> SongResult | None:
         window = self._find_window()
         if window is None:
@@ -228,11 +413,25 @@ class WindowsSpotifyUI:
                             return SongResult(title, artist, button=button)
             except Exception:
                 continue
+        # Track rows can have a Play control only while hovered. A native UIA
+        # default action targets the classified row itself, without typing or
+        # clicking an unrelated window. Metadata still has to confirm playback.
+        try:
+            for row in window.descendants():
+                try:
+                    song = self._row_song(row, query)
+                    if song is not None:
+                        return song
+                except Exception:
+                    continue
+        except Exception:
+            return None
         return None
 
     def invoke_song(self, song: SongResult):
         window = self._find_window()
-        if window is None or song.button is None:
+        target = song.button if song.button is not None else song.row
+        if window is None or target is None:
             raise RuntimeError("Spotify's song control is no longer available. Try the request again.")
         try:
             window.set_focus()
@@ -249,7 +448,7 @@ class WindowsSpotifyUI:
             # Verify that the captured element still belongs to this Spotify
             # window. Invoke targets that exact element; no mouse/keyboard
             # fallback can hit an unrelated foreground application.
-            current = song.button
+            current = target
             found_window = False
             for _ in range(20):
                 if current == window:
@@ -258,8 +457,19 @@ class WindowsSpotifyUI:
                 current = current.parent()
                 if current is None:
                     break
-            if not found_window or not song.button.is_visible() or not song.button.is_enabled():
+            if not found_window or not target.is_visible() or not target.is_enabled():
                 raise RuntimeError("Spotify's search results changed before selection. Try the request again.")
+            if song.row is not None:
+                query = song.title + (" by " + song.artist if song.artist else "")
+                fresh = self._row_song(song.row, query)
+                if (fresh is None or _normalise(fresh.title) != _normalise(song.title)
+                        or (song.artist and _normalise(fresh.artist) != _normalise(song.artist))):
+                    raise RuntimeError("Spotify's selected song or artist changed before playback. Try the request again.")
+                try:
+                    song.row.invoke()
+                except Exception as error:
+                    raise RuntimeError("Spotify's matching song row doesn't expose a supported playback action. Select this song in Spotify manually.") from error
+                return
             label = song.button.window_text().strip()
             if not re.match(r"^play(?:\s|$)", label, re.I):
                 raise RuntimeError("Spotify no longer offers Play for that result. Try the request again.")
@@ -328,7 +538,7 @@ class SongPlayback:
                 break
             await self.sleep(min(0.25, max(0, deadline - self.clock())))
         if song is None:
-            raise RuntimeError("I opened Spotify results, but couldn't identify an accessible matching song Play button. Sign in and select the track manually; this Spotify layout may not support automatic selection.")
+            raise RuntimeError("I opened Spotify results, but couldn't identify an accessible matching song control. Sign in and select the track manually; this Spotify layout may not support automatic selection.")
         self._check_cancelled()
         self.ui.invoke_song(song)
         deadline = self.clock() + self.playback_timeout

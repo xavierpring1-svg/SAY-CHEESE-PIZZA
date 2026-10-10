@@ -1,18 +1,61 @@
 # JARVIS for Windows
 
-**[Download JARVIS 1.2 for Windows 10/11](https://github.com/xavierpring1-svg/SAY-CHEESE-PIZZA/raw/refs/heads/main/downloads/JARVIS-Windows.zip?v=1.2.0)**
+## 1.3.1 desktop-control fix
+
+Chrome searches now open an encoded Google search directly in the installed Chrome
+executable. They no longer need keyboard or accessibility components. Chrome dictation
+and Spotify song selection use Windows' native UI Automation through the bundled
+`comtypes` library. This avoids the previous `pywinauto` import chain, which required
+an MFC DLL missing from the portable package. Song selection also handles verified
+Spotify track rows when their Play button is hidden. Playback is still confirmed
+through Windows media metadata.
+
+Run **Check Desktop Controls.cmd** in the extracted folder to check native automation,
+Chrome installation, Spotify process, and Windows media-session availability. It reads
+availability only and does not open apps or control playback.
+
+## Holographic interface and commands
+
+The updated source has a cyan holographic face whose mouth animates during actual
+speech playback. Tasks, Applications, Settings, and the clock remain available;
+CPU/GPU usage panels have been removed. Mouth movement follows playback boundaries,
+not individual phonemes.
+
+- Say **write pizza near me in Chrome**, then **search up what I typed** to press
+  Enter in the same address bar. **Search up anything on the tab** also submits
+  pending dictation. JARVIS stops if the text or focused application has changed.
+- Say **skip this song on SpotX**, **previous song**, or **replay song**. Replay
+  seeks the current song to its beginning and verifies playback. Missing metadata,
+  unavailable seeking, adverts, or changed client behavior produce an explicit failure.
+- **SpotX volume forty percent**, **mute SpotX**, and **Spotify volume up** control
+  Spotify's own Windows audio sessions. The music slider sets that same app volume;
+  other apps retain their levels. Plain **volume forty percent** controls system volume.
+- **Tell me about the Moon** or **research Ada Lovelace** retrieves a short Wikipedia
+  summary with a source URL. This optional online lookup sends the requested topic
+  to `en.wikipedia.org`; it requires internet access. Chrome searches open results,
+  but JARVIS does not read arbitrary Chrome tabs. Broad conversation keeps the built-in
+  local model as its default. Local models can be inaccurate and do not have automatic
+  access to live news; larger Ollama models can be selected in Settings.
+
+The updated portable package can be reproduced with
+`python repack_windows.py --output-zip /path/to/JARVIS-Windows-1.3.1.zip`.
+This verifies and reuses the existing Windows runtime and launcher, refreshes source
+and asset hashes, and records runtime reuse in `package-manifest.json`. Dependency
+or launcher changes require a full `build_windows.py` build instead.
+
+**[Download JARVIS 1.3.1 for Windows 10/11](https://raw.githubusercontent.com/xavierpring1-svg/SAY-CHEESE-PIZZA/refs/heads/jarvis-1.3.1-download/downloads/JARVIS-Windows-1.3.1.zip)**
 
 Extract the whole ZIP and open **JARVIS.exe**. Run **Create Desktop Shortcut.cmd**
 to put it on your desktop. No Python installation or AI API key is needed.
 Use this download link, rather than GitHub's source-code Download ZIP button.
 
-**Upgrading:** choose **Quit JARVIS** in the old app first. Extract 1.2 into a new
+**Upgrading:** choose **Quit JARVIS** in the old app first. Extract 1.3.1 into a new
 folder and recreate your shortcut. Your saved tasks and settings stay in AppData.
 
 ## What's changed
 
-- A redesigned dashboard with an animated cyan reactor, real microphone waveform,
-  utilisation charts, readable conversation history, and editable recognized words.
+- A redesigned dashboard with a speaking holographic face, real microphone waveform,
+  readable conversation history, and editable recognized words.
 - British male neural speech, clearer spoken prose, interruption, and a Windows
   audio-start fix. Recognition stays available while a reply is being prepared.
 - Separate wake detection and offline Whisper transcription, bounded silence
@@ -120,20 +163,25 @@ can prevent playback. JARVIS reports failure when it cannot verify playback.
 
 Chrome dictation identifies the browser's actual address bar and enters punctuation
 literally. **Search that** requires the same bar to remain focused and unchanged.
-Searches use Chrome's configured search engine. It stops if another window or a web form
-gets focus. Install desktop Google Chrome to use these commands.
+Follow-up dictation searches use Chrome's configured search engine. Direct **search
+Chrome for weather** commands open Google results in Chrome. Dictation stops if another
+window or a web form gets focus. Install desktop Google Chrome to use these commands.
 
 Applications are discovered from Start Menu shortcuts, Windows registrations, and Store
 app IDs. Add portable apps through **Applications → Register an app shortcut**.
 Ambiguous names need a more specific app name. Administrative apps may show Windows'
 normal elevation prompt.
 
-Tasks, settings, and models live in `%LOCALAPPDATA%\JarvisDesktop`. GPU metrics use
-NVIDIA's driver utility or Windows engine counters; unsupported drivers show **N/A**.
+Tasks, settings, and models live in `%LOCALAPPDATA%\JarvisDesktop`.
 
 ## Troubleshooting and source
 
 - **Startup fails:** run **Debug JARVIS.cmd**. The native launcher is unsigned.
+- **Chrome or Spotify controls fail:** quit any older JARVIS instance, extract the
+  complete 1.3.1 ZIP into a new folder, and open its **JARVIS.exe**. Run **Check Desktop
+  Controls.cmd** for component checks. Open Spotify/SpotX, sign in, and play one song
+  manually before trying named-song playback. Chrome searches also work while Spotify
+  is closed.
 - **No microphone:** Windows privacy settings must permit desktop microphone access.
 - **Voice setup:** allow HTTPS to `alphacephei.com`, `github.com`, `api.github.com`, and
   `release-assets.githubusercontent.com`.
@@ -150,6 +198,10 @@ The public download and SHA256 are in `downloads/`. Source is in `main.py` and `
 `package-manifest.json` in the ZIP records verified dependency hashes and bundled source
 hashes. Develop with Python **3.12**: install `requirements-dev.txt`, then run `python main.py`.
 Run `python -m pytest -q`; Linux UI rendering uses `QT_QPA_PLATFORM=offscreen`.
+On Linux, use `python main.py --demo --screenshot /tmp/jarvis-dashboard.png` for the
+headless development UI. Set `LOCALAPPDATA` to a writable local data directory when
+needed. `sounddevice` requires PortAudio (`libportaudio2` on Debian); native Windows
+controls, physical microphone/audio, and the packaged executable require Windows testing.
 
 Independent fan-inspired project. Dependency licenses are retained in runtime metadata;
 llama.cpp is MIT, Qwen is Apache 2.0, and Whisper/sherpa-onnx retain their upstream licenses.

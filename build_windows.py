@@ -18,6 +18,36 @@ from package_download import create_download, file_sha256, trim_python_runtime, 
 
 ROOT = Path(__file__).resolve().parent
 RELEASE = ROOT / "dist/JARVIS-Windows"
+SOURCE_FOLDERS = ("jarvis", "tests", "docs", "third_party")
+SOURCE_FILES = (
+    "main.py", "requirements.txt", "requirements-dev.txt", "README.md", "VALIDATION.md",
+    "launcher.c", "build_windows.py", "package_download.py", "repack_windows.py",
+    "prepare_brain_runtime.py", "check_desktop.py", "jarvis.ico",
+)
+
+
+def copy_app_sources(release):
+    """Copy current application sources and assets, excluding Python caches."""
+    release = Path(release)
+    for folder in SOURCE_FOLDERS:
+        if (ROOT / folder).is_dir():
+            shutil.copytree(ROOT / folder, release / folder,
+                            ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
+    files = [ROOT / name for name in SOURCE_FILES]
+    files += sorted(ROOT.glob("*.cmd")) + sorted(ROOT.glob("*.ps1"))
+    for file in files:
+        shutil.copy2(file, release / file.name)
+
+
+def source_file_hashes(release):
+    """Include every bundled source/asset and launcher; exclude runtime/manifest."""
+    release = Path(release)
+    return {
+        file.relative_to(release).as_posix(): file_sha256(file)
+        for file in sorted(release.rglob("*"))
+        if file.is_file() and file.relative_to(release).parts[0] != "runtime"
+        and file.relative_to(release).as_posix() != "package-manifest.json"
+    }
 
 
 def get_json(url):
@@ -166,25 +196,11 @@ def assemble(release, wheel_directory):
         raise RuntimeError("Windows launcher compiler/PE inspection tool unavailable")
     qt_trim = trim_qt(site, objdump)
     python_trim = trim_python_runtime(runtime, objdump)
-    for folder in ["jarvis", "tests", "docs", "third_party"]:
-        if (ROOT / folder).is_dir():
-            shutil.copytree(ROOT / folder, release / folder,
-                            ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
-    source_files = [ROOT / name for name in [
-        "main.py", "requirements.txt", "requirements-dev.txt", "README.md", "VALIDATION.md",
-        "launcher.c", "build_windows.py", "package_download.py", "prepare_brain_runtime.py", "jarvis.ico",
-    ]]
-    source_files += sorted(ROOT.glob("*.cmd")) + sorted(ROOT.glob("*.ps1"))
-    for file in source_files:
-        shutil.copy2(file, release / file.name)
+    copy_app_sources(release)
     subprocess.run([str(compiler), "-municode", "-mwindows", "-Os", "-static", "-s",
                     "-Wl,--no-insert-timestamp", str(ROOT / "launcher.c"),
                     "-o", str(release / "JARVIS.exe"), "-lshell32"], check=True)
-    source_hashes = {
-        file.relative_to(release).as_posix(): file_sha256(file)
-        for file in sorted(release.rglob("*"))
-        if file.is_file() and "runtime" not in file.relative_to(release).parts
-    }
+    source_hashes = source_file_hashes(release)
     (release / "package-manifest.json").write_text(json.dumps({
         "python": {"version": "3.12.10", "source": registration["packageContent"],
                    "sha512": expected, "checksum_source": registration["catalogEntry"]},
